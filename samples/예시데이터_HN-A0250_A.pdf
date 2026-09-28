@@ -1,0 +1,46 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 842 595] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 447 >>
+stream
+0.8 w 20 20 802 555 re S
+2 w 80 380 m 420 380 l S 420 380 m 520 460 l S 420 380 m 520 300 l S 250 380 m 250 250 l S
+1 w 520 30 302 150 re S
+BT /F1 9 Tf 12 TL 530 165 Td
+(PART NO. HN-A0250 | REV A) Tj
+T* (TITLE: HARNESS ASSY-PANEL) Tj
+T* (MODEL X2 | CUST. A) Tj
+T* (APPLY: PANEL) Tj
+T* (CIRCUITS: 15 | BRANCHES: 2) Tj
+T* (SAMPLE DATA - NOT A REAL DRAWING) Tj
+ET
+BT /F1 9 Tf 12 TL 40 560 Td
+(NOTE: CN-0180 CN-0181 SHIELD) Tj
+T* (WIRE WR-0050) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000738 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+835
+%%EOF

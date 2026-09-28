@@ -2,3 +2,6 @@
 node_modules/
 __pycache__/
 .env
+
+# 실명·고객사명이 든 수강생 원본 — 공개 여부 대표 확인 전까지 커밋하지 않음 (2026-09-28)
+docs/source/03_ECN_OUTPUT_설계변경통보서_양식.xlsx
