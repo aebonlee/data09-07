@@ -223,3 +223,27 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
   .global-search { flex-basis: 100%; order: 3; }
   h1 { font-size: 1.25rem; }
 }
+
+/* ── 도면 비교 (2026-09-29) ─────────────── */
+.cmp-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cmp-slot h3 { margin-top: 0; }
+.cmp-canvas { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; margin-top: 6px; }
+.cmp-canvas.pickable { cursor: crosshair; }
+.cmp-privacy { font-size: .92rem; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.legend { list-style: none; padding: 0; margin: 10px 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; }
+.legend li { display: inline-flex; align-items: center; gap: 8px; }
+.sw { display: inline-block; width: 18px; height: 12px; border-radius: 2px; }
+.sw-add { background: rgb(214, 32, 32); }
+.sw-del { background: rgb(37, 99, 235); }
+.sw-ink { background: rgb(178, 184, 192); }
+.t-add { color: var(--danger); font-weight: 700; }
+.t-del { color: #1d4ed8; text-decoration: line-through; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td, tr.sel td { background: var(--info-bg); }
+.diff-tbl tr.row-add td { color: var(--danger); background: var(--danger-bg); font-weight: 600; }
+.diff-tbl tr.row-del td { color: #1d4ed8; text-decoration: line-through; background: #eef3fe; }
+.diff-tbl td.cell-chg strong { color: var(--danger); }
+.diff-tbl td.cell-chg .old { color: var(--muted); text-decoration: line-through; }
+.diff-tbl tr.row-chg td:first-child { color: var(--danger); font-weight: 700; }
+@media (max-width: 720px) { .cmp-two { grid-template-columns: minmax(0, 1fr); } }

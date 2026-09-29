@@ -110,7 +110,8 @@
       h += '<h2>비교 패널</h2><p class="small">' + esc(d.partNo + ' ' + (d.rev || '') + ' ↔ ' + cd.partNo + ' ' + (cd.rev || '')) + '</p>' +
         '<h3>공통</h3><ul class="cmp-list">' + (cmp.common.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') || '<li class="muted">없음</li>') + '</ul>' +
         '<h3>차이</h3><ul class="cmp-list">' + (cmp.diff.map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') || '<li class="muted">없음</li>') + '</ul>' +
-        '<h3>점수 근거</h3><ul class="cmp-list small">' + L.WEIGHT_KEYS.map(function (k) { return '<li>' + esc(L.WEIGHT_SHORT[k] + ' ' + sel.items[k] + ' — ' + sel.notes[k]) + '</li>'; }).join('') + '</ul>';
+        '<h3>점수 근거</h3><ul class="cmp-list small">' + L.WEIGHT_KEYS.map(function (k) { return '<li>' + esc(L.WEIGHT_SHORT[k] + ' ' + sel.items[k] + ' — ' + sel.notes[k]) + '</li>'; }).join('') + '</ul>' +
+        '<p><a class="btn btn-sm" href="#/compare?a=' + encodeURIComponent(d.id) + '&b=' + encodeURIComponent(cd.id) + '">도면 비교 열기 (그림 차이 · 부품 표)</a></p>';
     }
     var cg = cd ? L.findBy(db.groups, cd.groupId) : null;
     var linkTo = cg ? cg.id : (cls.kind === 'existing' ? cls.groupId : '');

@@ -844,6 +844,228 @@
     return { rows: R, merges: merges, widths: [5, 11, 18, 15, 9, 12, 9, 7, 15, 10, 13, 9, 11, 16, 10, 11] };
   }
 
+  // ── 도면 비교 (2026-09-29 추가 요청) ──────────────
+  // 비트맵은 {w, h, 배열} 대신 배열과 w·h 를 따로 받습니다. 마스크 = Uint8Array(w*h), 1 = 선(잉크), 0 = 빈 곳.
+
+  // 이진화: RGBA 픽셀 → 마스크. 투명한 곳은 흰 바탕으로 보고, 밝기가 기준값보다 어두우면 선으로 봅니다.
+  function binarize(rgba, w, h, threshold) {
+    var thr = threshold == null ? 160 : threshold;
+    var n = w * h, out = new Uint8Array(n);
+    for (var i = 0; i < n; i++) {
+      var p = i * 4, a = rgba[p + 3] / 255;
+      var lum = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
+      var v = lum * a + 255 * (1 - a);
+      out[i] = v < thr ? 1 : 0;
+    }
+    return out;
+  }
+
+  // 팽창(dilate): 선을 사방 r 픽셀만큼 두껍게 — 가로·세로 두 번 훑어 정사각형 창과 같은 결과를 냅니다.
+  function dilate(mask, w, h, r) {
+    r = Math.max(0, Math.floor(r || 0));
+    if (!r) return new Uint8Array(mask);
+    var tmp = new Uint8Array(w * h), out = new Uint8Array(w * h), x, y, cnt;
+    for (y = 0; y < h; y++) {
+      var row = y * w; cnt = 0;
+      for (x = 0; x < Math.min(r, w); x++) cnt += mask[row + x];
+      for (x = 0; x < w; x++) {
+        if (x + r < w) cnt += mask[row + x + r];
+        if (x - r - 1 >= 0) cnt -= mask[row + x - r - 1];
+        tmp[row + x] = cnt > 0 ? 1 : 0;
+      }
+    }
+    for (x = 0; x < w; x++) {
+      cnt = 0;
+      for (y = 0; y < Math.min(r, h); y++) cnt += tmp[y * w + x];
+      for (y = 0; y < h; y++) {
+        if (y + r < h) cnt += tmp[(y + r) * w + x];
+        if (y - r - 1 >= 0) cnt -= tmp[(y - r - 1) * w + x];
+        out[y * w + x] = cnt > 0 ? 1 : 0;
+      }
+    }
+    return out;
+  }
+
+  // 차이: B에만 있는 선(added, 적색) · A에만 있는 선(removed, 파랑). tol 픽셀 안의 흔들림은 같은 선으로 봅니다.
+  function diffMasks(a, b, w, h, tol) {
+    var da = dilate(a, w, h, tol), db = dilate(b, w, h, tol);
+    var n = w * h, added = new Uint8Array(n), removed = new Uint8Array(n), na = 0, nr = 0, inkA = 0, inkB = 0;
+    for (var i = 0; i < n; i++) {
+      inkA += a[i]; inkB += b[i];
+      if (b[i] && !da[i]) { added[i] = 1; na++; }
+      if (a[i] && !db[i]) { removed[i] = 1; nr++; }
+    }
+    return { added: added, removed: removed, addedCount: na, removedCount: nr, inkA: inkA, inkB: inkB };
+  }
+
+  // 연결요소: 8방향으로 이어진 점을 한 덩어리로. gap 픽셀 안에 떨어진 조각은 한 상자로 묶고,
+  // 면적(실제 선 픽셀 수)이 minArea 보다 작은 점 잡음은 버립니다. 위→아래, 왼→오른 순서.
+  function components(mask, w, h, opt) {
+    opt = opt || {};
+    var gap = Math.max(0, Math.floor(opt.gap || 0)), minArea = opt.minArea == null ? 1 : opt.minArea;
+    var lab = gap ? dilate(mask, w, h, gap) : mask;
+    var seen = new Uint8Array(w * h), stack = new Int32Array(w * h), out = [];
+    for (var s = 0; s < w * h; s++) {
+      if (!lab[s] || seen[s]) continue;
+      var sp = 0, x0 = w, y0 = h, x1 = -1, y1 = -1, area = 0;
+      stack[sp++] = s; seen[s] = 1;
+      while (sp) {
+        var i = stack[--sp], x = i % w, y = (i - x) / w;
+        if (mask[i]) { area++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        for (var dy = -1; dy <= 1; dy++) {
+          var ny = y + dy; if (ny < 0 || ny >= h) continue;
+          for (var dx = -1; dx <= 1; dx++) {
+            var nx = x + dx; if (nx < 0 || nx >= w) continue;
+            var j = ny * w + nx;
+            if (lab[j] && !seen[j]) { seen[j] = 1; stack[sp++] = j; }
+          }
+        }
+      }
+      if (area >= minArea && x1 >= 0) out.push({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, area: area, cx: Math.round((x0 + x1) / 2), cy: Math.round((y0 + y1) / 2) });
+    }
+    out.sort(function (p, q) { return p.y - q.y || p.x - q.x; });
+    return out;
+  }
+
+  // 차이 영역 목록: 추가(B에만)·삭제(A에만) 상자를 합쳐 번호를 매깁니다.
+  function diffRegions(diff, w, h, opt) {
+    var list = [];
+    components(diff.added, w, h, opt).forEach(function (c) { c.type = '추가'; list.push(c); });
+    components(diff.removed, w, h, opt).forEach(function (c) { c.type = '삭제'; list.push(c); });
+    list.sort(function (p, q) { return p.y - q.y || p.x - q.x; });
+    list.forEach(function (c, i) { c.no = i + 1; });
+    return list;
+  }
+
+  // 유사변환(이동·회전·배율) 최소제곱 추정: src(B 좌표) → dst(A 좌표).
+  // x' = a·x − b·y + tx,  y' = b·x + a·y + ty.  점 1쌍이면 배율 fallbackScale 고정·이동만.
+  function fitSimilarity(src, dst, fallbackScale) {
+    var n = Math.min(src.length, dst.length);
+    if (!n) return null;
+    var T;
+    if (n === 1) {
+      var s = fallbackScale || 1;
+      T = { a: s, b: 0, tx: dst[0].x - s * src[0].x, ty: dst[0].y - s * src[0].y };
+    } else {
+      var msx = 0, msy = 0, mdx = 0, mdy = 0, i;
+      for (i = 0; i < n; i++) { msx += src[i].x; msy += src[i].y; mdx += dst[i].x; mdy += dst[i].y; }
+      msx /= n; msy /= n; mdx /= n; mdy /= n;
+      var sxx = 0, pa = 0, pb = 0;
+      for (i = 0; i < n; i++) {
+        var sx = src[i].x - msx, sy = src[i].y - msy, dx = dst[i].x - mdx, dy = dst[i].y - mdy;
+        sxx += sx * sx + sy * sy; pa += sx * dx + sy * dy; pb += sx * dy - sy * dx;
+      }
+      if (!sxx) return fitSimilarity(src.slice(0, 1), dst.slice(0, 1), fallbackScale);
+      var a = pa / sxx, b = pb / sxx;
+      T = { a: a, b: b, tx: mdx - (a * msx - b * msy), ty: mdy - (b * msx + a * msy) };
+    }
+    T.scale = Math.sqrt(T.a * T.a + T.b * T.b);
+    T.angle = Math.atan2(T.b, T.a) * 180 / Math.PI;
+    var se = 0;
+    for (var k = 0; k < n; k++) {
+      var p = applySimilarity(T, src[k]);
+      se += Math.pow(p.x - dst[k].x, 2) + Math.pow(p.y - dst[k].y, 2);
+    }
+    T.rms = Math.sqrt(se / n);
+    return T;
+  }
+  function applySimilarity(T, p) { return { x: T.a * p.x - T.b * p.y + T.tx, y: T.b * p.x + T.a * p.y + T.ty }; }
+
+  // ── 표 비교 (BOM·부품 목록) ───────────────
+  var KEY_HINTS = /품번|자재\s*코드|자재\s*번호|부품\s*번호|품목\s*코드|PART\s*NO|P\/N|ITEM\s*CODE|MATERIAL/i;
+  function guessKeyColumn(headers) {
+    for (var i = 0; i < headers.length; i++) if (KEY_HINTS.test(String(headers[i]))) return headers[i];
+    return headers[0] || '';
+  }
+  // 엑셀에서 복사해 붙여 넣은 글(탭 구분) 또는 CSV → 행 객체 목록. 첫 줄은 머리행.
+  function parsePastedTable(text) {
+    var lines = String(text || '').replace(/\r/g, '').split('\n').filter(function (l) { return l.trim() !== ''; });
+    if (!lines.length) return { headers: [], rows: [] };
+    var sep = lines[0].indexOf('\t') >= 0 ? '\t' : ',';
+    var headers = lines[0].split(sep).map(function (x) { return x.trim(); });
+    var rows = lines.slice(1).map(function (l) {
+      var cells = l.split(sep), o = {};
+      headers.forEach(function (hd, i) { o[hd] = cells[i] == null ? '' : cells[i].trim(); });
+      return o;
+    });
+    return { headers: headers, rows: rows };
+  }
+  function sameCell(x, y) {
+    var nx = toNum(x), ny = toNum(y);
+    if (nx != null && ny != null) return nx === ny;
+    return norm(x) === norm(y);
+  }
+  // 두 표를 key 열로 맞대어 추가·삭제·변경·동일 행을 가립니다. key 는 열 이름 또는 함수.
+  // 같은 키가 여러 번 나오면 나온 순서대로 짝을 짓습니다(#2, #3 …).
+  function tableDiff(rowsA, rowsB, opt) {
+    opt = opt || {};
+    var keyOf = typeof opt.key === 'function' ? opt.key : function (r) { return r[opt.key]; };
+    function keyed(rows) {
+      var seen = {};
+      return rows.map(function (r) {
+        var k = norm(keyOf(r));
+        seen[k] = (seen[k] || 0) + 1;
+        return { k: seen[k] > 1 ? k + '#' + seen[k] : k, label: keyOf(r), r: r };
+      }).filter(function (x) { return x.k !== ''; });
+    }
+    var ka = keyed(rowsA || []), kb = keyed(rowsB || []);
+    var cols = opt.cols;
+    if (!cols) {
+      cols = [];
+      ka.concat(kb).forEach(function (x) { Object.keys(x.r).forEach(function (c) { if (c !== opt.key && cols.indexOf(c) < 0) cols.push(c); }); });
+    }
+    var mapA = {}, mapB = {};
+    ka.forEach(function (x) { mapA[x.k] = x; });
+    kb.forEach(function (x) { mapB[x.k] = x; });
+    var out = kb.map(function (x) {
+      var a = mapA[x.k];
+      if (!a) return { _k: x.k, key: x.label, status: '추가', a: null, b: x.r, changed: [] };
+      var changed = cols.filter(function (c) { return !sameCell(a.r[c], x.r[c]); });
+      return { _k: x.k, key: x.label, status: changed.length ? '변경' : '동일', a: a.r, b: x.r, changed: changed };
+    });
+    // A에만 있는 행은 A에서 바로 앞에 있던 행 뒤에 끼워 넣어 원래 순서를 살립니다.
+    var prev = null;
+    ka.forEach(function (x) {
+      if (mapB[x.k]) { prev = x.k; return; }
+      var at = 0;
+      for (var i = 0; i < out.length; i++) if (out[i]._k === prev) { at = i + 1; break; }
+      if (prev === null) at = 0;
+      while (at < out.length && out[at].status === '삭제') at++;
+      out.splice(at, 0, { _k: x.k, key: x.label, status: '삭제', a: x.r, b: null, changed: [] });
+    });
+    out.forEach(function (r) { delete r._k; });
+    var counts = { 추가: 0, 삭제: 0, 변경: 0, 동일: 0 };
+    out.forEach(function (r) { counts[r.status]++; });
+    return { cols: cols, rows: out, counts: counts };
+  }
+  // 등록된 도면 정보 → 비교용 부품 표(정보 칸 + 커넥터·전선 목록, 같은 품번이 여러 번이면 수량으로 셉니다)
+  function drawingPartRows(d) {
+    var rows = [];
+    ['partName', 'rev', 'customer', 'model', 'usage', 'circuits', 'branches'].forEach(function (k) {
+      rows.push({ 구분: '도면 정보', 항목: FIELD_LABEL[k] || k, 값: d[k] == null ? '' : String(d[k]) });
+    });
+    [['connectors', '커넥터'], ['wires', '전선·보호재'], ['keywords', '구조 키워드']].forEach(function (p) {
+      var cnt = {}, order = [];
+      splitList(d[p[0]]).forEach(function (x) { if (!cnt[x]) order.push(x); cnt[x] = (cnt[x] || 0) + 1; });
+      order.forEach(function (x) { rows.push({ 구분: p[1], 항목: x, 값: String(cnt[x]) }); });
+    });
+    return rows;
+  }
+  function partRowKey(r) { return r.구분 + ' · ' + r.항목; }
+  function sheetTableDiff(res, keyLabel) {
+    var head = ['상태', keyLabel || '키'];
+    res.cols.forEach(function (c) { head.push(c + ' (A)', c + ' (B)'); });
+    head.push('바뀐 칸');
+    var rows = [head];
+    res.rows.forEach(function (r) {
+      var line = [r.status, r.key];
+      res.cols.forEach(function (c) { line.push(r.a ? r.a[c] : '', r.b ? r.b[c] : ''); });
+      line.push(r.changed.join(', '));
+      rows.push(line);
+    });
+    return rows;
+  }
+
   // ── 백업(JSON) ───────────────────────────────────────────
   function normalizeDb(p) {
     var db = emptyDb();
@@ -875,7 +1097,11 @@
     ecnDelayed: ecnDelayed, horizontalCandidates: horizontalCandidates, ecnGroupId: ecnGroupId, groupName: groupName,
     hitCheck: hitCheck, dashboard: dashboard, guessMapping: guessMapping, importRows: importRows,
     sheetSimilarity: sheetSimilarity, sheetGroups: sheetGroups, sheetEcnSummary: sheetEcnSummary,
-    sheetMaterials: sheetMaterials, sheetActions: sheetActions, sheetHitCheck: sheetHitCheck, ecnReport: ecnReport
+    sheetMaterials: sheetMaterials, sheetActions: sheetActions, sheetHitCheck: sheetHitCheck, ecnReport: ecnReport,
+    binarize: binarize, dilate: dilate, diffMasks: diffMasks, components: components, diffRegions: diffRegions,
+    fitSimilarity: fitSimilarity, applySimilarity: applySimilarity,
+    guessKeyColumn: guessKeyColumn, parsePastedTable: parsePastedTable, tableDiff: tableDiff,
+    drawingPartRows: drawingPartRows, partRowKey: partRowKey, sheetTableDiff: sheetTableDiff
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HNLogic = api;

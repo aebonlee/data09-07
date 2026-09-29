@@ -304,6 +304,7 @@
     });
   }
   App.extractPdfText = extractPdfText;
+  App.loadPdf = loadPdf;
 
   function renderPreview(id, pageNo) {
     var box = $('#preview'), sel = $('#pageSel');

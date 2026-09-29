@@ -221,4 +221,95 @@ test('예시 데이터 대시보드 수치', () => {
   assert.equal(L.sheetMaterials(db).length, 1 + 4 + 1);  // 머리행 + ECN-014 4건 + ECN-009 1건
 });
 
+console.log('도면 비교 (2026-09-29 추가 요청)');
+// 작은 합성 비트맵: 문자열 격자 '#' = 선
+function bm(rows) {
+  const h = rows.length, w = rows[0].length, m = new Uint8Array(w * h);
+  rows.forEach((r, y) => [...r].forEach((c, x) => { if (c === '#') m[y * w + x] = 1; }));
+  return { w, h, m };
+}
+test('이진화: 어두운 점만 선, 투명은 흰 바탕', () => {
+  // 픽셀 4개: 검정 · 흰색 · 회색(150) · 투명한 검정
+  const rgba = new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255, 150, 150, 150, 255, 0, 0, 0, 0]);
+  assert.deepEqual([...L.binarize(rgba, 4, 1, 160)], [1, 0, 1, 0]);
+  assert.deepEqual([...L.binarize(rgba, 4, 1, 100)], [1, 0, 0, 0]);
+});
+test('팽창: 점 하나가 r=1 이면 3×3', () => {
+  const a = bm(['.....', '.....', '..#..', '.....', '.....']);
+  const d = L.dilate(a.m, a.w, a.h, 1);
+  assert.equal(d.reduce((s, v) => s + v, 0), 9);
+  assert.equal(d[1 * 5 + 1], 1); assert.equal(d[0], 0);
+  assert.equal(L.dilate(a.m, a.w, a.h, 0).reduce((s, v) => s + v, 0), 1);
+});
+test('차이: 1px 어긋난 선은 허용치 1 이면 무시, B에만 있는 선은 추가·A에만 있는 선은 삭제', () => {
+  const A = bm(['##########', '..........', '..........', '..........', '#.........']);
+  const B = bm(['..........', '##########', '..........', '....###...', '..........']);
+  const d0 = L.diffMasks(A.m, B.m, A.w, A.h, 0);
+  assert.equal(d0.addedCount, 13); // 허용치 0: 한 줄 밀린 선 10 + 새 선 3 모두 차이
+  const d1 = L.diffMasks(A.m, B.m, A.w, A.h, 1);
+  assert.equal(d1.addedCount, 3);   // 새로 생긴 가로선 3칸만
+  assert.equal(d1.removedCount, 1); // 왼쪽 아래 점은 B에서 사라짐
+  assert.equal(d1.added[3 * 10 + 4], 1);
+  assert.equal(d1.removed[4 * 10 + 0], 1);
+});
+test('연결요소: 8방향 연결·잡음 제거·가까운 조각 묶기', () => {
+  const M = bm([
+    '##......#.',
+    '.#......#.',
+    '..#.......',
+    '..........',
+    '..........',
+    '..........',
+    '......#.#.',
+  ]);
+  const c = L.components(M.m, M.w, M.h, { minArea: 1 });
+  assert.equal(c.length, 4); // 대각선 덩어리(4) · 세로 2 · 아래 점 2개
+  assert.deepEqual([c[0].x, c[0].y, c[0].w, c[0].h, c[0].area], [0, 0, 3, 3, 4]);
+  assert.equal(L.components(M.m, M.w, M.h, { minArea: 2 }).length, 2); // 점 1개짜리 둘은 잡음
+  const g = L.components(M.m, M.w, M.h, { minArea: 1, gap: 1 });
+  assert.equal(g.length, 3); // 한 칸 떨어진 아래 점 두 개가 한 상자로
+  assert.deepEqual([g[2].x, g[2].w, g[2].area], [6, 3, 2]);
+});
+test('차이 영역 번호: 추가·삭제를 위→아래 순서로', () => {
+  const A = bm(['#.....', '......', '......']);
+  const B = bm(['......', '......', '...###']);
+  const r = L.diffRegions(L.diffMasks(A.m, B.m, 6, 3, 0), 6, 3, { minArea: 1 });
+  assert.deepEqual(r.map(x => [x.no, x.type, x.area]), [[1, '삭제', 1], [2, '추가', 3]]);
+});
+test('유사변환 추정: 회전 30°·배율 2·이동을 기준점 3쌍에서 복원', () => {
+  const ang = Math.PI / 6, s = 2, T0 = { a: s * Math.cos(ang), b: s * Math.sin(ang), tx: 15, ty: -4 };
+  const src = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 3, y: 7 }];
+  const dst = src.map(p => L.applySimilarity(T0, p));
+  const T = L.fitSimilarity(src, dst);
+  assert.ok(Math.abs(T.scale - 2) < 1e-9);
+  assert.ok(Math.abs(T.angle - 30) < 1e-9);
+  assert.ok(Math.abs(T.tx - 15) < 1e-9 && Math.abs(T.ty + 4) < 1e-9);
+  assert.ok(T.rms < 1e-9);
+  // 1쌍이면 배율 고정·이동만
+  const T1 = L.fitSimilarity([{ x: 10, y: 10 }], [{ x: 30, y: 25 }], 0.5);
+  assert.deepEqual([T1.a, T1.b, T1.tx, T1.ty], [0.5, 0, 25, 20]);
+  assert.equal(L.fitSimilarity([], []), null);
+});
+test('표 비교: 추가·삭제·변경 행과 순서', () => {
+  const A = [{ 품번: 'CN-01', 수량: 2, 사양: 'AMP' }, { 품번: 'CN-02', 수량: 1, 사양: '' }, { 품번: 'WR-10', 수량: '3', 사양: '0.5SQ' }];
+  const B = [{ 품번: 'CN-01', 수량: '2', 사양: 'AMP' }, { 품번: 'WR-10', 수량: 4, 사양: '0.5SQ' }, { 품번: 'CN-09', 수량: 1, 사양: '' }];
+  const r = L.tableDiff(A, B, { key: '품번' });
+  assert.deepEqual(r.rows.map(x => x.key + ':' + x.status), ['CN-01:동일', 'CN-02:삭제', 'WR-10:변경', 'CN-09:추가']);
+  assert.deepEqual(r.rows[2].changed, ['수량']); // '2' 와 2 는 같은 값
+  assert.deepEqual(r.counts, { 추가: 1, 삭제: 1, 변경: 1, 동일: 1 });
+  assert.equal(L.sheetTableDiff(r, '품번').length, 5);
+  assert.equal(L.guessKeyColumn(['No', '자재코드', '수량']), '자재코드');
+  const p = L.parsePastedTable('품번\t수량\nCN-01\t2\n\nCN-02\t1\n');
+  assert.deepEqual(p.headers, ['품번', '수량']); assert.equal(p.rows.length, 2); assert.equal(p.rows[1].수량, '1');
+});
+test('등록 도면 부품 표 비교: 커넥터 추가·REV 변경', () => {
+  const a = dw('HN-A0231', { rev: 'C', connectors: 'CN-0221, CN-0118', circuits: 38 });
+  const b = dw('HN-A0250', { rev: 'A', connectors: 'CN-0221, CN-0118, CN-0301', circuits: 42 });
+  const r = L.tableDiff(L.drawingPartRows(a), L.drawingPartRows(b), { key: L.partRowKey, cols: ['값'] });
+  const pick = s => r.rows.filter(x => x.status === s).map(x => x.key);
+  assert.deepEqual(pick('추가'), ['커넥터 · CN-0301']);
+  assert.deepEqual(pick('변경'), ['도면 정보 · REV', '도면 정보 · 회로 수']);
+  assert.deepEqual(pick('삭제'), []);
+});
+
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));
