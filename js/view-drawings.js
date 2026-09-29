@@ -88,7 +88,7 @@
       var miss = L.missingFields(x).length;
       var dup = L.findDuplicates(db.drawings, x);
       h += '<li data-id="' + x.id + '" class="' + (x.id === id ? 'sel' : '') + '"><div class="fn">' + esc(x.fileName || x.partNo || x.id) + '</div>' +
-        '<div class="small muted">' + esc(x.id) + ' · ' + (miss ? '확인 ' + miss + '건' : '추출 완료') + (dup.length ? ' · <span class="src-missing">중복 의심 ' + esc(dup[0].id) + '</span>' : '') +
+        '<div class="small muted">' + esc(x.id) + ' · ' + (miss ? '확인 ' + miss + '건' : '추출 완료') + (x.checkedAt ? ' · 확인됨' : x.source === 'PDF' ? ' · 확인 전' : '') + (dup.length ? ' · <span class="src-missing">중복 의심 ' + esc(dup[0].id) + '</span>' : '') +
         ' · ' + esc(L.drawingStatus(x)) + '</div></li>';
     });
     if (!list.length) h += '<li class="muted">아직 없습니다.</li>';
@@ -136,13 +136,14 @@
       });
       $('#reExtract', main).addEventListener('click', function () {
         d.rawText = $('#rawText', main).value;
-        applyExtraction(d, L.extractFields(d.rawText, d.fileName, db.settings), true);
+        var ps = d.pageSize || [0, 0];
+        applyExtraction(d, L.extractFromPdf(d.rawText, d.titleItems || [], ps[0], ps[1], d.fileName, db.settings), true);
         App.save(); App.toast('원문에서 다시 추출했습니다.'); App.rerender();
       });
     }
   });
 
-  var SRC_TEXT = { auto: '자동', file: '파일명', guess: '추정', manual: '수정', missing: '미인식' };
+  var SRC_TEXT = { auto: '자동', title: '제목란', file: '파일명', guess: '추정', manual: '수정', missing: '미인식' };
   function editForm(d) {
     var src = d.srcMap || {};
     var miss = L.missingFields(d);
@@ -155,9 +156,9 @@
     var usages = App.db.settings.usages || [];
     return '<div class="page-head"><h3 style="margin:0">추출정보 편집</h3><span class="small muted">모든 값 수정 가능</span></div>' +
       (miss.length ? '<div class="warn-box small">미인식 항목 ' + miss.length + '건: ' + esc(miss.map(function (k) { return L.FIELD_LABEL[k]; }).join(', ')) + ' — 직접 입력한 뒤 저장하면 분석에 반영됩니다.</div>' : '') +
-      dupWarn(d) +
+      dupWarn(d) + checkBox(d) + bomHint(d) +
       '<form id="editForm"><div class="form-grid">' + f('partNo') + f('rev') + f('customer') + f('model') + f('partName') +
-      f('usage', '예: ' + usages.join(', ')) +
+      f('usage', '예: ' + usages.join(', ')) + f('dwgDate', 'YYYY-MM-DD') +
       '</div><h3 style="margin-top:14px">추출 특징</h3><div class="form-grid">' +
       '<div class="wide">' + f('connectors', '쉼표로 구분 — 예: CN-0221, CN-0118') + '</div>' +
       f('circuits', '', 'number') + f('branches', '', 'number') +
@@ -167,6 +168,24 @@
       '<div class="actions"><button type="submit" class="btn">저장</button>' +
       '<button type="button" class="btn btn-primary" id="goSimilar">유사도 분석 시작 →</button>' +
       '<button type="button" class="btn btn-danger btn-sm" id="delDrawing">도면 삭제</button></div></form>';
+  }
+  // 올릴 때 자동으로 읽어 저장한 값의 확인 안내(2026-09-29 저녁 「문의04」).
+  // 저장은 이미 되어 있고, 사람이 한 번 보고 「확인 완료」를 누르면 확인 일시·확인자를 남깁니다.
+  function checkBox(d) {
+    var src = d.srcMap || {}, auto = Object.keys(src).filter(function (k) { return /^(title|auto|file|guess)$/.test(src[k]) && !L.isBlank(d[k]) && L.FIELD_LABEL[k]; });
+    if (d.checkedAt) return '<p class="small muted">읽은 값 확인: ' + esc(d.checkedAt + (d.checkedBy ? ' · ' + d.checkedBy : '')) + '</p>';
+    if (!auto.length) return '';
+    return '<div class="ok-box small check-box">도면을 올리면서 <strong>' + esc(auto.map(function (k) { return L.FIELD_LABEL[k] + '(' + SRC_TEXT[src[k]] + ')'; }).join(', ')) + '</strong>' +
+      ' 을(를) 읽어 이미 저장했습니다. 도면과 맞는지 보고, 고칠 칸은 고친 뒤 <strong>「확인 완료」</strong>를 눌러 주세요. 「파일명·추정」 칸은 특히 확인이 필요합니다.' +
+      '<div class="actions" style="margin-top:6px"><button type="button" class="btn btn-sm btn-primary" id="checkDone">확인 완료</button></div></div>';
+  }
+  // 하우징 ASSY 마스터가 있으면 이 도면에서 찾은 하우징 수와 BOM 구성 화면 바로가기(2026-09-29 저녁 「문의03」)
+  function bomHint(d) {
+    var m = App.db.housingMaster || [];
+    if (!m.length) return '';
+    var f = L.findHousings(d.rawText || '', d.connectors || '', m);
+    return '<p class="small">' + (f.length ? '하우징 ' + f.length + '종(' + esc(f.map(function (x) { return x.housing + ' ×' + x.count; }).join(', ')) + ')을 찾았습니다. ' : '마스터에 있는 하우징을 이 도면 글자에서 찾지 못했습니다. ') +
+      '<a href="#/bom?d=' + d.id + '">BOM 구성 →</a></p>';
   }
   function dupWarn(d) {
     var dup = L.findDuplicates(App.db.drawings, d);
@@ -187,6 +206,12 @@
       d.updatedBy = App.db.settings.approver || '';
     }
     form.addEventListener('submit', function (ev) { ev.preventDefault(); collect(); App.save(); App.toast('저장했습니다. 수정값은 다음 분석에 반영됩니다.'); App.rerender(); });
+    var cd = $('#checkDone', main);
+    if (cd) cd.addEventListener('click', function () {
+      collect();
+      d.checkedAt = L.toDateTimeStr(new Date()); d.checkedBy = App.db.settings.approver || '';
+      App.save(); App.toast('읽은 값을 확인 완료로 기록했습니다.'); App.rerender();
+    });
     $('#goSimilar', main).addEventListener('click', function () {
       collect(); App.save();
       App.go('#/similar/' + d.id);
@@ -248,7 +273,8 @@
       if (head !== '%PDF-') return { msg: file.name + ' — PDF 형식이 아니거나 손상되었습니다. 재등록하세요.' };
       var cand = { id: '', fileName: file.name, fileHash: L.fileHash(bytes) };
       return extractPdfText(buf.slice(0)).then(function (res) {
-        var ex = L.extractFields(res.text, file.name, db.settings);
+        // 제목란(글자 위치) → 글자 라벨 → 파일명 순서로 채웁니다(2026-09-29 저녁 「문의04」)
+        var ex = L.extractFromPdf(res.text, res.items, res.pw, res.ph, file.name, db.settings);
         cand.partNo = ex.fields.partNo || ''; cand.rev = ex.fields.rev || '';
         var dup = L.findDuplicates(db.drawings, cand);
         var decide = dup.length ? askDuplicate(file.name, dup) : Promise.resolve('new');
@@ -260,7 +286,9 @@
           if (choice !== 'new') return { msg: file.name + ' — 등록을 취소했습니다.' };
           var d = {
             id: L.nextId(db.drawings, 'DWG-', 4), fileName: file.name, fileHash: cand.fileHash, fileSize: bytes.length,
-            pages: res.pages, regDate: L.toDateStr(new Date()), source: 'PDF', rawText: res.text.slice(0, 30000), srcMap: {}
+            pages: res.pages, regDate: L.toDateStr(new Date()), source: 'PDF', rawText: res.text.slice(0, 30000), srcMap: {},
+            // 제목란 영역의 글자 조각만 둡니다(「원문에서 다시 추출」 때 제목란을 다시 읽기 위해). 도면 전체 글자 위치는 저장하지 않습니다.
+            titleItems: L.titleRegionItems(res.items, res.pw, res.ph).slice(0, 300), pageSize: [res.pw, res.ph]
           };
           if (dup.length) d.versionOf = dup[0].id;
           applyExtraction(d, ex, false);
@@ -268,7 +296,9 @@
           App.files[d.id] = buf;
           var miss = L.missingFields(d).length;
           var scan = res.text.replace(/\s/g, '').length < 20;
-          return { id: d.id, msg: file.name + ' — ' + d.id + ' 등록 · ' + (scan ? '문자를 거의 찾지 못했습니다(스캔본 추정). 미리보기를 보고 직접 입력하세요.' : (miss ? '확인 필요 ' + miss + '건' : '추출 완료')) + (dup.length ? ' · 신규 버전으로 등록' : '') };
+          var tbn = Object.keys(ex.title || {}).length;
+          return { id: d.id, msg: file.name + ' — ' + d.id + ' 자동 저장 · ' + (tbn ? '제목란에서 ' + tbn + '칸 읽음 · ' : '') +
+            (scan ? '글자 정보가 없는 PDF(글자를 선으로 그림)라 파일명에서만 읽었습니다. 나머지는 미리보기를 보고 입력해 주세요.' : (miss ? '확인 필요 ' + miss + '건' : '추출 완료')) + (dup.length ? ' · 신규 버전으로 등록' : '') };
         });
       }, function (err) {
         return { msg: file.name + ' — PDF 를 읽지 못했습니다(손상 가능). 재등록하세요. (' + (err && err.message || err) + ')' };
@@ -290,17 +320,27 @@
   }
   function extractPdfText(buf) {
     return loadPdf(buf).then(function (pdf) {
-      var n = Math.min(pdf.numPages, 20), texts = [], chain = Promise.resolve();
+      var n = Math.min(pdf.numPages, 20), texts = [], chain = Promise.resolve(), out = { items: [], pw: 0, ph: 0 };
       for (var i = 1; i <= n; i++) {
         (function (p) {
-          chain = chain.then(function () { return pdf.getPage(p); }).then(function (page) { return page.getTextContent(); }).then(function (tc) {
+          var pg;
+          chain = chain.then(function () { return pdf.getPage(p); }).then(function (page) { pg = page; return page.getTextContent(); }).then(function (tc) {
             var s = '';
             tc.items.forEach(function (it) { s += it.str + (it.hasEOL ? '\n' : ' '); });
             texts.push(s.replace(/[ \t]+/g, ' ').trim());
+            // 1쪽은 글자 위치도 둡니다(제목란 읽기). y 는 위에서부터 잰 글자 밑줄, h 는 글자 높이
+            if (p === 1) {
+              var vp = pg.getViewport({ scale: 1 });
+              out.pw = vp.width; out.ph = vp.height;
+              out.items = tc.items.filter(function (it) { return it.str && it.str.trim(); }).map(function (it) {
+                var t = it.transform;
+                return { str: it.str, x: Math.round(t[4] * 10) / 10, y: Math.round((vp.height - t[5]) * 10) / 10, w: Math.round((it.width || 0) * 10) / 10, h: Math.round(Math.sqrt(t[2] * t[2] + t[3] * t[3]) * 10) / 10 };
+              });
+            }
           });
         })(i);
       }
-      return chain.then(function () { return { text: texts.join('\n'), pages: pdf.numPages }; });
+      return chain.then(function () { out.text = texts.join('\n'); out.pages = pdf.numPages; return out; });
     });
   }
   App.extractPdfText = extractPdfText;
@@ -376,7 +416,7 @@
       '<a class="btn" href="#/register/' + d.id + '">추출정보 수정</a><a class="btn" href="#/similar/' + d.id + '">유사도 결과</a>' +
       '<a class="btn btn-primary" href="#/ecn/new?drawing=' + d.id + '">ECN 등록</a></div></div>';
     h += '<div class="two-col"><div class="card"><h2>도면 정보</h2><dl class="kv">' +
-      ['id', 'fileName', 'partNo', 'partName', 'rev', 'customer', 'model', 'usage', 'regDate', 'connectors', 'circuits', 'branches', 'wires', 'keywords'].map(function (k) {
+      ['id', 'fileName', 'partNo', 'partName', 'rev', 'customer', 'model', 'usage', 'dwgDate', 'regDate', 'connectors', 'circuits', 'branches', 'wires', 'keywords'].map(function (k) {
         return '<dt>' + esc(k === 'id' ? '도면 ID' : L.FIELD_LABEL[k]) + '</dt><dd>' + esc(d[k] == null ? '' : d[k]) + '</dd>';
       }).join('') + '<dt>상태</dt><dd>' + App.statusBadge(L.drawingStatus(d)) + '</dd></dl></div>';
     h += '<div class="card"><h2>그룹</h2>' + (g ? '<p><a href="#/groups?g=' + g.id + '">' + esc(g.id + ' ' + g.name) + '</a><br><span class="small muted">대표도면 ' + esc(g.repDrawingId) +

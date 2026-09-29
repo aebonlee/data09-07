@@ -20,6 +20,7 @@
 --    ecn_material    5절 변경자재 내역                                ← ecns[].materials[]
 --    ecn_impact      6절 영향도 검토·부서별 조치 (ECN 당 9행)         ← ecns[].impacts[]
 --    ecn_horizontal  7절 수평전개 검토                                ← ecns[].horizontal[]
+--    housing_master  하우징 → ASSY 자재 마스터 (2026-09-29 저녁 추가)   ← db.housingMaster[]
 --
 --  보안
 --    모든 표 RLS 켬. 행은 만든 사람(owner_id = auth.uid())만 봅니다.
@@ -93,6 +94,16 @@ create table if not exists public.drawing (
   -- ⚠ upsert 시 onConflict: 'owner_id,drawing_id'
   constraint drawing_owner_drawing_key unique (owner_id, drawing_id)
 );
+-- 2026-09-29 저녁 추가(「문의03·04」) — 이미 만든 표에도 붙도록 ALTER … IF NOT EXISTS
+alter table public.drawing add column if not exists dwg_date    date;                                    -- 제목란·파일명에서 읽은 도면 일자
+alter table public.drawing add column if not exists checked_at  timestamp;                               -- 자동으로 읽은 값을 사람이 확인한 일시
+alter table public.drawing add column if not exists checked_by  text not null default '';
+alter table public.drawing add column if not exists title_items jsonb not null default '[]'::jsonb;      -- 제목란 영역 글자 조각(다시 읽기용)
+alter table public.drawing add column if not exists bom_inputs  jsonb not null default '{}'::jsonb;      -- BOM 구성: 하우징별 개수·회로 수·전선 굵기
+alter table public.drawing drop constraint if exists drawing_title_items_array;
+alter table public.drawing add constraint drawing_title_items_array check (jsonb_typeof(title_items) = 'array');
+alter table public.drawing drop constraint if exists drawing_bom_inputs_object;
+alter table public.drawing add constraint drawing_bom_inputs_object check (jsonb_typeof(bom_inputs) = 'object');
 create index if not exists drawing_part_idx  on public.drawing (owner_id, part_no, rev);
 create index if not exists drawing_group_idx on public.drawing (owner_id, group_id);
 
@@ -265,6 +276,29 @@ create table if not exists public.ecn_horizontal (
   constraint ecn_horizontal_ecn_line_key unique (ecn_id, line_no)
 );
 
+-- 하우징 → ASSY 자재 마스터 (2026-09-29 저녁 「문의03」) — 회사 자료라 사용자가 엑셀로 불러옵니다
+create table if not exists public.housing_master (
+  id          bigint generated always as identity primary key,
+  owner_id    uuid not null default auth.uid(),
+  housing     text not null check (housing <> ''),                   -- 하우징 품번 (대문자로 맞춘 값)
+  item        text not null check (item <> ''),                      -- 딸린 자재 품번
+  name        text not null default '',
+  kind        text not null default '',                              -- LOCK · 단자 · 씰 …
+  qty         numeric not null default 1 check (qty >= 0),
+  unit        text not null default 'EA',
+  basis       text not null default '하우징당' check (basis in ('하우징당', '회로당')),
+  csa_text    text not null default '',                              -- 적용 전선 원문 '0.5~1.0'
+  csa_min     numeric,
+  csa_max     numeric,
+  pins        int check (pins is null or pins > 0),
+  note        text not null default '',
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint housing_master_csa_range check (csa_min is null or csa_max is null or csa_min <= csa_max),
+  -- ⚠ upsert 시 onConflict: 'owner_id,housing,item'
+  constraint housing_master_owner_item_key unique (owner_id, housing, item)
+);
+
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거 (search_path 고정)
 -- ----------------------------------------------------------------------------
@@ -281,7 +315,7 @@ do $trg$
 declare t text;
 begin
   foreach t in array array['app_settings','drawing','drawing_group','ecn',
-                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal']
+                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal','housing_master']
   loop
     execute format('drop trigger if exists %I on public.%I', t || '_updated_at', t);
     execute format('create trigger %I before update on public.%I
@@ -303,12 +337,13 @@ alter table public.ecn_receipt    enable row level security;
 alter table public.ecn_material   enable row level security;
 alter table public.ecn_impact     enable row level security;
 alter table public.ecn_horizontal enable row level security;
+alter table public.housing_master enable row level security;
 
 -- 부모가 없는 표
 do $rls$
 declare t text;
 begin
-  foreach t in array array['app_settings','drawing','drawing_group','ecn']
+  foreach t in array array['app_settings','drawing','drawing_group','ecn','housing_master']
   loop
     execute format('drop policy if exists %I on public.%I', t || '_select', t);
     execute format('drop policy if exists %I on public.%I', t || '_insert', t);

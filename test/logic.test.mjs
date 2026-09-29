@@ -349,6 +349,53 @@ test('위치만 이동한 영역 표시: 표가 (4, 3) 밀리면 moved, 값이 �
   mv.forEach(g => assert.deepEqual([g.moved.dx, g.moved.dy], [4, 3]));
   assert.ok(rg.some(g => !g.moved && g.x >= 40)); // 오른쪽 덩어리(10칸 아래로 이동 — 범위 6 밖)는 이동으로 설명 안 됨
 });
+// 멀리 옮겨진 블록(2026-09-29 저녁 「문의02」): 크기가 서로 다른 조각 4개로 된 블록(글자·기호 흉내)
+function glyphs(b, x, y, skip) {
+  const g = [[0, 0, 3, 3, true], [10, 0, 14, 2, true], [20, 0, 22, 5, true], [30, 0, 35, 5, false]];
+  g.forEach((q, i) => { if (i !== skip) rect(b, x + q[0], y + q[1], x + q[2], y + q[3], q[4]); });
+}
+test('멀리 이동: 블록이 (60, 30) 옮겨지면 보라(이동)로 빼고, 새로 생긴 조각만 적색으로 남김', () => {
+  const W = 120, H = 80;
+  const A = blank(W, H); glyphs(A, 10, 10);
+  const B = blank(W, H); glyphs(B, 70, 40); rect(B, 10, 60, 14, 64, true);   // 새 조각 5×5 = 25점
+  const d = L.diffMasks(A.m, B.m, W, H, 0);
+  const rg = L.diffRegions(d, W, H, { minArea: 1, gap: 12 });
+  const before = { added: d.added.slice(), removed: d.removed.slice() };
+  const mv = L.explainMoves(d, W, H, { tol: 0 });
+  assert.deepEqual([mv.peaks[0].dx, mv.peaks[0].dy], [60, 30]);
+  assert.equal(d.addedCount, 25);   // 남은 적색 = 새 조각뿐
+  assert.equal(d.removedCount, 0);  // 파랑은 모두 이동으로 설명됨
+  assert.equal(mv.pieces, 8);       // B 4조각 + A 4조각
+  L.tagMovedRegions(rg, before, mv, W);
+  const moved = rg.filter(g => g.moved);
+  assert.equal(moved.length, 2);    // A 원래 자리(삭제) · B 옮긴 자리(추가)
+  moved.forEach(g => { assert.deepEqual([g.moved.dx, g.moved.dy, g.moved.far], [60, 30, true]); });
+  assert.ok(rg.some(g => g.type === '추가' && !g.moved && g.x === 10 && g.y === 60));
+});
+test('멀리 이동 아님: 같은 모양이 도면에 그대로 남아 있고 하나 더 생긴 것은 추가(적색)', () => {
+  const W = 120, H = 80;
+  const A = blank(W, H); glyphs(A, 10, 10);
+  const B = blank(W, H); glyphs(B, 10, 10); glyphs(B, 70, 40);   // 기존 블록 그대로 + 같은 블록 새로 추가
+  const d = L.diffMasks(A.m, B.m, W, H, 0);
+  const n0 = d.addedCount;
+  const mv = L.explainMoves(d, W, H, { tol: 0 });
+  assert.equal(mv.count, 0);
+  assert.equal(d.addedCount, n0);   // 사라진 선하고만 맞대므로 남아 있는 같은 모양과 짝이 되지 않음
+});
+test('옮긴 뒤 값까지 바뀜: 바뀐 조각은 적색·파랑으로 남고 영역은 「일부 이동」', () => {
+  const W = 120, H = 80;
+  const A = blank(W, H); glyphs(A, 10, 10);
+  const B = blank(W, H); glyphs(B, 70, 40, 3); rect(B, 100, 55, 106, 56, true);   // 네 번째 조각(속 빈 6×6)을 빼고 조금 아래에 7×2 막대를 새로 그림
+  const d = L.diffMasks(A.m, B.m, W, H, 0);
+  const rg = L.diffRegions(d, W, H, { minArea: 1, gap: 12 });
+  const before = { added: d.added.slice(), removed: d.removed.slice() };
+  const mv = L.explainMoves(d, W, H, { tol: 0 });
+  assert.equal(d.addedCount, 14);   // 새 막대 7×2
+  assert.equal(d.removedCount, 20); // 사라진 속 빈 사각형 6×6 테두리 20점
+  L.tagMovedRegions(rg, before, mv, W);
+  const b = rg.find(g => g.type === '추가');
+  assert.ok(!b.moved && b.movedShare > 0.6 && b.movedShare < 0.9);
+});
 test('블록별 정렬: 아래쪽 그림만 12 밀린 개정 도면 → 칸마다 따로 맞춰 차이가 사라짐', () => {
   const W = 120, H = 120;
   const A = blank(W, H); rect(A, 10, 10, 50, 40); rect(A, 20, 20, 30, 30, true); rect(A, 10, 70, 50, 100); rect(A, 60, 75, 70, 85, true);
@@ -429,6 +476,76 @@ test('비교 범위 제한: 기준점 둘레 밖의 차이는 지움', () => {
   assert.deepEqual(box, { x0: 2, y0: -7, x1: 28, y1: 18 }); // 여백은 최소 10
   L.clipDiff(d, W, H, { x0: 10, y0: 0, x1: 19, y1: 9 });
   assert.equal(d.addedCount, 1); assert.equal(d.added[5 * W + 15], 1); assert.equal(d.added[2 * W + 2], 0);
+});
+
+console.log('제목란 읽기 · 파일명 규칙 (2026-09-29 저녁 문의04)');
+// 실제 두산 제목란의 배치(라벨 작은 글자 · 값 큰 글자)를 본뜬 가상 값. 쪽 1000×700, 제목란은 오른쪽 아래.
+const TB = [
+  { str: 'NO.', x: 700, y: 560, w: 10, h: 5 }, { str: 'PART NO.', x: 725, y: 560, w: 25, h: 5 }, { str: 'PART NAME', x: 800, y: 560, w: 30, h: 5 },
+  { str: 'MODEL', x: 700, y: 572, w: 18, h: 5 }, { str: 'NAME', x: 770, y: 570, w: 15, h: 5 },
+  { str: 'HARNESS', x: 820, y: 580, w: 36, h: 10 }, { str: 'HX-77', x: 712, y: 585, w: 34, h: 10 },
+  { str: 'AIRCON - TEST', x: 806, y: 602, w: 64, h: 10 },
+  { str: 'Rev.', x: 740, y: 614, w: 10, h: 5 }, { str: '00', x: 752, y: 624, w: 14, h: 12 }, { str: 'A2', x: 712, y: 624, w: 15, h: 12 },
+  { str: 'NO.', x: 870, y: 636, w: 9, h: 5 }, { str: '999999-00001', x: 887, y: 643, w: 67, h: 10 },
+  { str: '26.06.30', x: 712, y: 646, w: 20, h: 5 }, { str: 'D', x: 700, y: 647, w: 4, h: 6 },
+  { str: 'DOOSAN BOBCAT KOREA Co.,Ltd.', x: 770, y: 660, w: 160, h: 9 },
+  { str: 'NO.', x: 60, y: 60, w: 9, h: 5 }, { str: 'W-001', x: 80, y: 60, w: 30, h: 5 }   // 도면 안 표 머리 — 제목란 영역 밖이라 쓰지 않음
+];
+test('제목란: 라벨 옆·아래 큰 글자를 값으로, 두 줄 품명은 이어 붙임, 날짜·고객사', () => {
+  const f = L.titleBlockFields(TB, 1000, 700);
+  assert.deepEqual(f, { partNo: '999999-00001', model: 'HX-77', partName: 'HARNESS AIRCON - TEST', rev: '00', dwgDate: '2026-06-30', customer: '두산밥캣코리아' });
+});
+test('제목란 우선 · 글자 라벨이 다음 칸 라벨을 잡은 값은 버림 · 파일명은 빈 칸만', () => {
+  const text = 'NO. PART NO. PART NAME MATERIAL MODEL NAME Rev.\n2. APPLY THE RESIN TUBE AT ALL SPLICE AND RING TERMINAL';
+  const r = L.extractFromPdf(text, TB, 1000, 700, '999999-00001_0001.pdf');
+  assert.equal(r.fields.partNo, '999999-00001'); assert.equal(r.source.partNo, 'title');
+  assert.equal(r.fields.rev, '00'); assert.equal(r.fields.usage, undefined);   // 주기 문장의 APPLY 는 사용처가 아님
+  const old = L.extractFields(text, '', null).fields;
+  assert.ok(old.partNo && old.partNo !== '999999-00001');                    // 예전 방식은 엉뚱한 값을 잡았음(되돌려 확인)
+});
+test('파일명 규칙: 품번·끝 영문 REV·YYMMDD 날짜·가운데 품명, _0001 일련번호는 버림', () => {
+  assert.deepEqual(L.fileNameFields('999999-12345A MCV JOINT HARNESS - 260605.pdf'), { partNo: '999999-12345A', rev: 'A', dwgDate: '2026-06-05', partName: 'MCV JOINT HARNESS' });
+  assert.deepEqual(L.fileNameFields('999999-12345_0001.pdf'), { partNo: '999999-12345' });
+  assert.deepEqual(L.fileNameFields('HN-A0231_C.pdf'), {});
+  const r = L.extractFromPdf('', [], 0, 0, '999999-12345A MCV JOINT HARNESS - 260605.pdf');   // 글자 정보 없는 PDF
+  assert.deepEqual([r.fields.partNo, r.source.partNo, r.fields.rev, r.source.rev], ['999999-12345A', 'file', 'A', 'guess']);
+  const o = L.extractFromPdf('', [], 0, 0, 'HN-A0231_C.pdf');                                 // 예전 예시 파일명 규칙 유지
+  assert.deepEqual([o.fields.partNo, o.fields.rev], ['HN-A0231', 'C']);
+});
+
+console.log('하우징 → ASSY 자재 BOM (2026-09-29 저녁 문의03)');
+const HM = [
+  ['회사 하우징 마스터'],
+  ['하우징 품번', '자재 품번', '자재명', '구분', '수량', '단위', '적용 전선(SQ)', '비고'],
+  ['DT06-2S-CE06', 'LK-1', 'LOCK', 'LOCK', 1, 'EA', '', ''],
+  ['', 'TM-S', '단자 소', '단자', 1, 'EA', '0.5~1.0', ''],
+  ['', 'TM-L', '단자 대', '단자', 1, 'EA', '1.25-2.0 SQ', ''],
+  ['CN-01', 'CAP-1', '캡', '', 2, 'EA', '', '']
+];
+test('마스터 읽기: 제목줄 건너 머리행 찾기, 병합 셀 이어쓰기, 단자는 회로당, 굵기 범위', () => {
+  const p = L.parseHousingMaster(HM);
+  assert.equal(p.headerRow, 2); assert.equal(p.rows.length, 4);
+  assert.deepEqual(p.rows.map(r => [r.housing, r.item, r.basis]), [['DT06-2S-CE06', 'LK-1', '하우징당'], ['DT06-2S-CE06', 'TM-S', '회로당'], ['DT06-2S-CE06', 'TM-L', '회로당'], ['CN-01', 'CAP-1', '하우징당']]);
+  assert.deepEqual([p.rows[1].csaMin, p.rows[1].csaMax, p.rows[2].csaMin, p.rows[2].csaMax], [0.5, 1, 1.25, 2]);
+  assert.ok(L.parseHousingMaster([['품명', '수량']]).error);
+});
+test('하우징 찾기: 도면 글자에서 개수(하이픈 앞뒤 공백 허용), 없으면 주요 커넥터 칸', () => {
+  const m = L.parseHousingMaster(HM).rows;
+  const f = L.findHousings('ROTATING CW DEUTSCH DT06-2S-CE06 ... DT06 - 2S - CE06 ... XDT06-2S-CE06Y', 'CN-01, CN-99', m);
+  assert.deepEqual(f, [{ housing: 'DT06-2S-CE06', count: 2, from: '도면 글자' }, { housing: 'CN-01', count: 1, from: '주요 커넥터 칸' }]);
+  assert.equal(L.housingPins('DT06-2S-CE06', m), 2);   // 핀 수 열이 없으면 품번의 -2S
+});
+test('BOM 펼치기: 수량 = 마스터 × 회로 수 × 개수, 굵기 맞는 단자만, 굵기 모르면 확인 표시, 합치기', () => {
+  const m = L.parseHousingMaster(HM).rows;
+  let r = L.expandHousingBom([{ housing: 'DT06-2S-CE06', count: 3, circuits: 2, csa: 0.5, from: '도면 글자' }], m);
+  assert.deepEqual(r.map(x => [x.품목코드, x.수량, x.출처]), [['DT06-2S-CE06', 3, '도면 글자'], ['LK-1', 3, 'ASSY 마스터 (DT06-2S-CE06)'], ['TM-S', 6, 'ASSY 마스터 (DT06-2S-CE06)']]);
+  r = L.expandHousingBom([{ housing: 'DT06-2S-CE06', count: 1, circuits: 2 }], m);   // 굵기 모름 → 단자 둘 다 + 확인
+  assert.deepEqual(r.filter(x => x.확인).map(x => x.품목코드), ['TM-S', 'TM-L']);
+  r = L.expandHousingBom([{ housing: 'ZZ-1', count: 1 }], m);
+  assert.equal(r.length, 1); assert.ok(/마스터에 없음/.test(r[0].확인));
+  r = L.expandHousingBom([{ housing: 'CN-01', count: 1 }, { housing: 'CN-01', count: 2, from: '직접 입력' }], m, { merge: true });
+  assert.deepEqual(r.map(x => [x.품목코드, x.수량]), [['CN-01', 3], ['CAP-1', 6]]);
+  assert.deepEqual(L.sheetHousingBom(r, 'X')[1], ['품목코드', '품목명', '구분', '단위', '수량', '출처', '근거', '확인']);
 });
 
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));

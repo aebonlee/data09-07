@@ -117,6 +117,7 @@ label.field .hint { font-weight: 400; color: var(--muted); font-size: .82rem; }
 .b-danger { background: var(--danger-bg); color: var(--danger); }
 .b-info { background: var(--info-bg); color: var(--primary-dark); }
 .b-muted { background: #eef0f3; color: var(--muted); }
+.b-mv { background: #f1e8fb; color: rgb(106, 26, 180); }
 
 /* 표 — 좁은 화면에서는 상자 안에서 가로로 밉니다 */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
@@ -157,7 +158,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
 .preview canvas { max-width: 100%; height: auto; display: block; background: #fff; }
 .raw-text { width: 100%; min-height: 120px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .82rem; }
 .src-tag { font-size: .75rem; font-weight: 700; margin-left: 4px; }
-.src-auto { color: var(--ok); }
+.src-auto, .src-title { color: var(--ok); }
 .src-file, .src-guess { color: var(--warn); }
 .src-missing { color: var(--danger); }
 .src-manual { color: var(--primary-dark); }
@@ -251,3 +252,4 @@ tr.clickable:hover td, tr.sel td { background: var(--info-bg); }
 .chk-row label { display: inline-flex; gap: 6px; align-items: center; }
 details > summary { cursor: pointer; margin: 6px 0; }
 .sw-mv { background: rgb(126, 34, 206); }
+.in-sm { width: 110px; min-height: 32px; }

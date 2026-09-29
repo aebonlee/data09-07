@@ -7,14 +7,14 @@
   'use strict';
   var App = root.HNApp, L = App.L, esc = App.esc, $ = App.$, $$ = App.$$;
   var IMG_MAX = 4000;    // 그림 파일은 긴 변을 이 크기까지 줄여 계산합니다(속도·메모리)
-  var COL = { add: [214, 32, 32], del: [37, 99, 235], ink: [34, 40, 49], faint: [178, 184, 192] };
+  var COL = { add: [214, 32, 32], del: [37, 99, 235], mv: [126, 34, 206], ink: [34, 40, 49], faint: [178, 184, 192] };
 
   function st() {
     if (!App.ui.cmp) {
       App.ui.cmp = {
         A: null, B: null, partA: '', partB: '', ptsA: [], ptsB: [], picking: false,
         // 기본값은 벡터(CAD) PDF 기준입니다 — 스캔 흔들림이 없어 허용치 1, 색 선까지 잡도록 어둡기 200(2026-09-29 실제 도면으로 조정)
-        opt: { thr: 200, tol: 1, minArea: 8, gap: 12, fade: true, auto: true, block: false, roi: false, pdfSide: 3600 },
+        opt: { thr: 200, tol: 1, minArea: 8, gap: 12, fade: true, auto: true, block: false, roi: false, moves: true, pdfSide: 3600 },
         view: 'side', split: 50, res: null, sel: 0, tsel: 0,
         drwA: '', drwB: '', bomA: null, bomB: null, bomKey: '', bomCols: null, bomRes: null, ecnId: ''
       };
@@ -73,7 +73,8 @@
       rng('tol', '흔들림 허용 (픽셀)', 0, 6, 1, o.tol, 'CAD PDF 는 0~1, 그림 파일은 2~3') +
       rng('minArea', '최소 면적 (픽셀)', 1, 200, 1, o.minArea, '이보다 작은 점 잡음은 버립니다') +
       rng('gap', '묶음 거리 (픽셀)', 0, 60, 1, o.gap, '이만큼 가까운 조각은 한 상자로 묶습니다') +
-      '</div><label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="optFade"' + (o.fade ? ' checked' : '') + '> 공통 선은 흐리게 보기</label>' +
+      '</div><label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="optMoves"' + (o.moves ? ' checked' : '') + '> 옮겨진 것 따로 보기 — 표의 줄이 밀리거나 블록을 다른 자리로 옮겨 <strong>내용은 같고 위치만 바뀐 선</strong>은 보라로 칠하고 적색·파랑에서 뺍니다(옮긴 뒤 값까지 바뀐 곳은 적색으로 남음)</label>' +
+      '<label class="small" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="optFade"' + (o.fade ? ' checked' : '') + '> 공통 선은 흐리게 보기</label>' +
       '<div class="actions" style="margin-top:10px"><button type="button" class="btn btn-primary" id="runDiff"' + (s.A && s.B ? '' : ' disabled') + '>차이 계산</button>' +
       '<span class="small muted" id="diffInfo">' + (s.res ? esc(resText(s.res)) : '') + '</span></div></div>';
 
@@ -83,7 +84,7 @@
         return '<button type="button" class="btn btn-sm' + (s.view === v[0] ? ' btn-primary' : '') + '" data-view="' + v[0] + '" aria-pressed="' + (s.view === v[0]) + '">' + v[1] + '</button>';
       }).join('') + '</div></div>' +
       '<ul class="legend"><li><span class="sw sw-add"></span>적색 — B에만 있는 선·글자 (A와 비교해 추가·변경된 곳)</li>' +
-      '<li><span class="sw sw-del"></span>파랑 — A에만 있는 선·글자 (B에서 사라진 곳)</li><li><span class="sw sw-mv"></span>보라 점선 — 내용은 같고 위치만 조금 옮겨진 곳</li><li><span class="sw sw-ink"></span>회색 — 두 도면 공통</li></ul>' +
+      '<li><span class="sw sw-del"></span>파랑 — A에만 있는 선·글자 (B에서 사라진 곳)</li><li><span class="sw sw-mv"></span>보라 — 내용은 같고 위치만 옮겨진 곳 (A 는 원래 자리, B 는 옮긴 자리. 줄을 누르면 화살표)</li><li><span class="sw sw-ink"></span>회색 — 두 도면 공통</li></ul>' +
       '<div id="resultBox">' + (s.res ? '' : '<p class="muted small">「차이 계산」을 누르면 결과가 여기에 나옵니다. 먼저 보고 싶으면 위의 「예시 불러오기」를 눌러 보세요.</p>') + '</div>' +
       (s.view === 'slider' && s.res ? '<label class="small" style="display:block;margin-top:8px">왼쪽 A ↔ 오른쪽 B 경계 <input type="range" id="splitR" min="0" max="100" value="' + s.split + '" style="width:100%"></label>' : '') +
       '<div id="zoomBox"></div><div id="textBox"></div><div id="regionBox"></div></div>';
@@ -116,7 +117,9 @@
   function resText(r) {
     var mv = r.regions.filter(function (x) { return x.moved; }).length;
     var add = r.regions.filter(function (x) { return x.type === '추가' && !x.moved; }).length;
-    var t = '선 차이: 적색(B에만) ' + add + '곳 · 파랑(A에만) ' + (r.regions.length - add - mv) + '곳' + (mv ? ' · 위치만 조금 이동 ' + mv + '곳' : '');
+    var far = r.regions.filter(function (x) { return x.moved && x.moved.far; }).length;
+    var t = '선 차이: 적색(B에만) ' + add + '곳 · 파랑(A에만) ' + (r.regions.length - add - mv) + '곳' + (mv ? ' · 이동(보라) ' + mv + '곳' + (far ? '(멀리 ' + far + ')' : '') : '');
+    if (r.mv && r.mv.before) t += ' — 이동을 빼고 남은 차이 선 ' + Math.round(100 * (r.diff.addedCount + r.diff.removedCount) / Math.max(1, r.mv.before)) + '%';
     if (r.text) t += ' / 글자 차이: 변경 ' + r.text.counts.변경 + ' · 추가 ' + r.text.counts.추가 + ' · 삭제 ' + r.text.counts.삭제 + ' · 이동 ' + r.text.counts.이동;
     return t;
   }
@@ -252,6 +255,7 @@
       r.addEventListener('input', function () { $('#out_' + r.getAttribute('data-opt'), main).textContent = r.value; });
       r.addEventListener('change', function () { s.opt[r.getAttribute('data-opt')] = +r.value; if (s.res) recompute(s); });
     });
+    $('#optMoves', main).addEventListener('change', function () { s.opt.moves = this.checked; if (s.res) recompute(s); });
     $('#optFade', main).addEventListener('change', function () { s.opt.fade = this.checked; if (s.res) { s.res.cache = {}; renderResult(s); } });
     $('#runDiff', main).addEventListener('click', function () {
       var b = this; b.disabled = true; b.textContent = '계산 중…';
@@ -349,23 +353,35 @@
     var diff = L.diffMasks(mA, mB, W, H, o.tol);
     var roi = o.roi && s.ptsA.length >= 2 ? L.pointsBox(s.ptsA) : null;
     if (roi) { L.clipDiff(diff, W, H, roi); shiftNote += ' · 비교 범위: 기준점 둘레만'; }
-    var regions = block ? L.diffRegions(diff, W, H, { minArea: o.minArea, gap: o.gap }) : regionsFor(mA, mB, diff, W, H, o);
+    var mvx = {};
+    var regions = regionsFor(mA, mB, diff, W, H, o, !block, mvx);
     var text = null;
     if (s.A.text && s.B.text && s.A.text.length && s.B.text.length) {
       var tb = s.B.text.map(function (t) { var p = L.applySimilarity(T, t); return { str: t.str, x: p.x, y: p.y, h: t.h * (T.scale || 1), w: t.w * (T.scale || 1), ang: t.ang }; });
       var inRoi = function (t) { return !roi || (t.x >= roi.x0 && t.x <= roi.x1 && t.y >= roi.y0 && t.y <= roi.y1); };
       text = L.textDiff(s.A.text.filter(inRoi), tb.filter(inRoi), { radius: 1.2, minRadius: 6 });
     }
-    s.res = { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, T: T, text: text, at: new Date(), cache: {},
+    s.res = { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, mv: mvx.mv || null, T: T, text: text, at: new Date(), cache: {},
       alignText: how + ' — ' + tText(T) + shiftNote };
     s.sel = 0; s.tsel = 0;
     App.rerender();
   }
-  // 차이 영역 + 「위치만 조금 옮겨진 영역」 표시(표·블록이 몇 mm 밀린 경우 — 값이 바뀐 것과 구분)
-  function regionsFor(mA, mB, diff, W, H, o) {
+  // 차이 영역 + 이동 표시. 상자는 이동을 빼기 전 차이로 만들어(상자 수가 잘게 늘지 않게) 영역마다 이동 몫을 붙입니다.
+  //  - 옮겨진 것 따로 보기(opt.moves, 2026-09-29 저녁 「문의02」): 멀리 옮겨진 선을 diff 에서 빼서 보라(res.mv)로 — logic.explainMoves
+  //  - 위치만 조금 이동(markMoved): 표·블록이 몇 픽셀 밀린 것 (small = 블록별 정렬이 아닐 때만)
+  function regionsFor(mA, mB, diff, W, H, o, small, out) {
     var regions = L.diffRegions(diff, W, H, { minArea: o.minArea, gap: o.gap });
+    if (o.moves) {
+      var before = { added: diff.added.slice(), removed: diff.removed.slice() }, n0 = diff.addedCount + diff.removedCount;
+      var mv = L.explainMoves(diff, W, H, { tol: o.tol });
+      mv.before = n0;
+      L.tagMovedRegions(regions, before, mv, W);
+      if (out) out.mv = mv;
+    }
+    if (!small) return regions;
     var dA = L.dilate(mA, W, H, o.tol), dB = L.dilate(mB, W, H, o.tol);
-    return L.markMoved(regions, mA, mB, dA, dB, W, H, Math.max(6, Math.round(W / 240)));
+    L.markMoved(regions.filter(function (g) { return !g.moved; }), mA, mB, dA, dB, W, H, Math.max(6, Math.round(W / 240)));
+    return regions;
   }
   // 허용치·면적 등만 바뀌면 정렬은 다시 하지 않습니다
   function recompute(s) {
@@ -373,7 +389,9 @@
     if (!r) return;
     if (r.thr !== o.thr) { compute(s); return; }
     r.diff = L.clipDiff(L.diffMasks(r.mA, r.mB, r.W, r.H, o.tol), r.W, r.H, r.roi);
-    r.regions = r.block ? L.diffRegions(r.diff, r.W, r.H, { minArea: o.minArea, gap: o.gap }) : regionsFor(r.mA, r.mB, r.diff, r.W, r.H, o);
+    var mvx = {};
+    r.regions = regionsFor(r.mA, r.mB, r.diff, r.W, r.H, o, !r.block, mvx);
+    r.mv = mvx.mv || null;
     r.cache = {}; s.sel = 0;
     App.rerender();
   }
@@ -387,14 +405,15 @@
     var ctx = c.getContext('2d'), im = ctx.createImageData(W, H), d = im.data;
     var ink = s.opt.fade ? COL.faint : COL.ink;
     var add = r.diff.added, del = r.diff.removed, mA = r.mA, mB = r.mB;
+    var z = new Uint8Array(0), mvA = r.mv ? r.mv.movedDel : z, mvB = r.mv ? r.mv.movedAdd : z;   // 이동으로 설명된 선(보라)
     for (var i = 0; i < W * H; i++) {
       var col = null;
       if (which === 'overlay') {
-        if (add[i]) col = COL.add; else if (del[i]) col = COL.del; else if (mA[i] || mB[i]) col = ink;
+        if (add[i]) col = COL.add; else if (del[i]) col = COL.del; else if (mvB[i] || mvA[i]) col = COL.mv; else if (mA[i] || mB[i]) col = ink;
       } else if (which === 'B') {
-        if (add[i]) col = COL.add; else if (mB[i]) col = ink; else if (del[i]) col = [196, 214, 250];
+        if (add[i]) col = COL.add; else if (mvB[i]) col = COL.mv; else if (mB[i]) col = ink; else if (del[i]) col = [196, 214, 250];
       } else {
-        if (del[i]) col = COL.del; else if (mA[i]) col = ink;
+        if (del[i]) col = COL.del; else if (mvA[i]) col = COL.mv; else if (mA[i]) col = ink;
       }
       var p = i * 4;
       if (col) { d[p] = col[0]; d[p + 1] = col[1]; d[p + 2] = col[2]; } else { d[p] = d[p + 1] = d[p + 2] = 255; }
@@ -431,11 +450,33 @@
       ctx.setLineDash(g.type === '삭제' || g.moved ? [lw * 3, lw * 2] : []);
       ctx.strokeRect(g.x - pad, g.y - pad, g.w + pad * 2, g.h + pad * 2);
       ctx.setLineDash([]);
+      // 고른 「멀리 이동」은 원래 자리 → 옮긴 자리 화살표와 상대 자리 점선 상자를 함께 그립니다
+      if (on && g.moved && g.moved.far) drawMoveArrow(ctx, g, lw, pad);
       var label = String(g.no), tw = ctx.measureText(label).width + 8;
       var ly = Math.max(0, g.y - pad - fs - 4);
       ctx.fillStyle = col; ctx.fillRect(g.x - pad, ly, tw, fs + 4);
       ctx.fillStyle = '#fff'; ctx.fillText(label, g.x - pad + 4, ly + fs);
     });
+  }
+  function drawMoveArrow(ctx, g, lw, pad) {
+    var d = g.moved, add = g.type === '추가';
+    var ox = add ? g.x - d.dx : g.x + d.dx, oy = add ? g.y - d.dy : g.y + d.dy;   // 상대 자리(추가 = A 원래 자리, 삭제 = B 옮긴 자리)
+    ctx.save();
+    ctx.strokeStyle = 'rgb(126,34,206)'; ctx.fillStyle = 'rgb(126,34,206)'; ctx.lineWidth = lw * 1.5;
+    ctx.setLineDash([lw * 2, lw * 2]); ctx.strokeRect(ox - pad, oy - pad, g.w + pad * 2, g.h + pad * 2); ctx.setLineDash([]);
+    var x0 = (add ? ox : g.x) + g.w / 2, y0 = (add ? oy : g.y) + g.h / 2, x1 = x0 + d.dx, y1 = y0 + d.dy;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    var ang = Math.atan2(y1 - y0, x1 - x0), hl = lw * 8;
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.lineTo(x1 - hl * Math.cos(ang - 0.4), y1 - hl * Math.sin(ang - 0.4));
+    ctx.lineTo(x1 - hl * Math.cos(ang + 0.4), y1 - hl * Math.sin(ang + 0.4));
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+  // 이동 표시 글: 「멀리 이동 (+120, −46)」 / 「위치만 조금 이동 (3, 0)」 / 일부만 이동
+  function moveLabel(g) {
+    if (g.moved) return (g.moved.far ? '위치 이동' : '위치만 조금 이동') + ' (' + g.moved.dx + ', ' + g.moved.dy + ')' + (g.moved.mixed ? ' 외' : '');
+    return '';
   }
   // 글자 차이: 글자 둘레에 두꺼운 테두리 + 「T번호」 꼬리표. 변경·추가 = 적색, 삭제 = 파랑, 이동 = 보라
   function textRect(t) {
@@ -505,7 +546,7 @@
     }
     if (s.sel) {
       var g = r.regions[s.sel - 1];
-      return { x: g.x, y: g.y, w: g.w, h: g.h, col: g.moved ? 'rgb(126,34,206)' : g.type === '추가' ? 'rgb(214,32,32)' : 'rgb(37,99,235)', title: g.no + '번 ' + (g.moved ? '위치만 이동' : g.type === '추가' ? 'B에만 (적색)' : 'A에만 (파랑)') };
+      return { x: g.x, y: g.y, w: g.w, h: g.h, col: g.moved ? 'rgb(126,34,206)' : g.type === '추가' ? 'rgb(214,32,32)' : 'rgb(37,99,235)', title: g.no + '번 ' + (g.moved ? moveLabel(g) + (g.type === '추가' ? ' — B 옮긴 자리' : ' — A 원래 자리') : (g.type === '추가' ? 'B에만 (적색)' : 'A에만 (파랑)') + (g.movedShare ? ' · 일부 이동 ' + Math.round(g.movedShare * 100) + '%' : '')) };
     }
     return null;
   }
@@ -566,8 +607,9 @@
       App.table([
         { label: '번호', render: function (g) { return '<strong>' + g.no + '</strong>'; } },
         { label: '구분', render: function (g) {
-          if (g.moved) return '<span class="badge b-muted">위치만 이동 (' + g.moved.dx + ', ' + g.moved.dy + ')</span>';
-          return g.type === '추가' ? '<span class="badge b-danger">B에만 (적색)</span>' : '<span class="badge b-info">A에만 (파랑)</span>'; } },
+          if (g.moved) return '<span class="badge b-mv">' + esc(moveLabel(g)) + '</span> <span class="small muted">' + (g.type === '추가' ? 'B 옮긴 자리' : 'A 원래 자리') + '</span>';
+          return (g.type === '추가' ? '<span class="badge b-danger">B에만 (적색)</span>' : '<span class="badge b-info">A에만 (파랑)</span>') +
+            (g.movedShare ? ' <span class="small muted">일부 이동 ' + Math.round(g.movedShare * 100) + '% — 나머지는 옮긴 뒤 달라진 선</span>' : ''); } },
         { label: '위치 (x, y)', render: function (g) { return g.x + ', ' + g.y; } },
         { label: '크기 (가로×세로)', render: function (g) { return g.w + '×' + g.h; } },
         { label: '면적 (선 픽셀)', key: 'area', cls: 'num' }
@@ -582,7 +624,8 @@
   }
   function regionRows(s) {
     var rows = [['A품번', s.partA, 'B품번', s.partB], ['번호', '구분', 'x', 'y', '가로', '세로', '면적(픽셀)']];
-    s.res.regions.forEach(function (g) { rows.push([g.no, g.moved ? '위치만 이동(' + g.moved.dx + ',' + g.moved.dy + ')' : g.type === '추가' ? 'B에만(적색)' : 'A에만(파랑)', g.x, g.y, g.w, g.h, g.area]); });
+    rows[1].push('이동 몫(%)');
+    s.res.regions.forEach(function (g) { rows.push([g.no, g.moved ? moveLabel(g) + (g.type === '추가' ? ' · B 옮긴 자리' : ' · A 원래 자리') : g.type === '추가' ? 'B에만(적색)' : 'A에만(파랑)', g.x, g.y, g.w, g.h, g.area, g.moved ? Math.round((g.moved.share || 1) * 100) : g.movedShare ? Math.round(g.movedShare * 100) : 0]); });
     return rows;
   }
   function textRows(s) {
@@ -612,8 +655,8 @@
     ctx.fillText('도면 비교 — A ' + (s.partA || s.A.name) + ' (변경 전)  vs  B ' + (s.partB || s.B.name) + ' (변경 후)', 8, fs + 4);
     ctx.font = Math.round(fs * 0.8) + 'px sans-serif';
     var y2 = fs * 2 + 10, x = 8;
-    [['rgb(214,32,32)', '적색 = B에만 있는 선·글자'], ['rgb(37,99,235)', '파랑 = A에만 있는 선·글자'],
-      ['#566170', '선 차이 ' + s.res.regions.length + '곳' + (s.res.text ? ' · 글자 변경 ' + s.res.text.counts.변경 + '건' : '') + ' · ' + L.toDateTimeStr(new Date()) + ' · 자동 표시는 후보이며 최종 판단은 담당자']].forEach(function (p) {
+    [['rgb(214,32,32)', '적색 = B에만 있는 선·글자'], ['rgb(37,99,235)', '파랑 = A에만 있는 선·글자']].concat(s.res.mv ? [['rgb(126,34,206)', '보라 = 위치만 옮겨진 선']] : []).concat([
+      ['#566170', '선 차이 ' + s.res.regions.length + '곳' + (s.res.text ? ' · 글자 변경 ' + s.res.text.counts.변경 + '건' : '') + ' · ' + L.toDateTimeStr(new Date()) + ' · 자동 표시는 후보이며 최종 판단은 담당자']]).forEach(function (p) {
       ctx.fillStyle = p[0]; ctx.fillText(p[1], x, y2); x += ctx.measureText(p[1]).width + fs;
     });
     return c;
@@ -689,6 +732,8 @@
       });
     });
   }
+  // BOM 구성 화면(view-bom.js)에서 만든 표를 5절 A·B 에 넣을 때
+  App.setCompareBom = function (k, t) { var s = st(); s['bom' + k] = t; s.bomRes = null; s.bomCols = null; };
   function setBom(s, k, t) {
     s['bom' + k] = t; s.bomRes = null;
     if (t && t.partNo) { if (k === 'A' && !s.partA) s.partA = t.partNo; if (k === 'B' && !s.partB) s.partB = t.partNo; }
@@ -904,6 +949,15 @@
     ctx.font = '18px sans-serif';
     ctx.fillText('NOTE 1. 테이핑 50% 겹침', 80, 700);
     ctx.fillText(v ? 'NOTE 2. CN-0301 분기 추가 (ECN 예시)' : 'NOTE 2. -', 80, 730);
+    // 스플라이스 표: 내용은 같고 B 에서 자리만 옮김(A 아래 가운데 → B 오른쪽 가운데) — 「옮겨진 것 따로 보기」 체험용(2026-09-29 저녁)
+    var tx0 = v ? 1090 : 640, ty0 = v ? 440 : 700;
+    ctx.lineWidth = 2; ctx.strokeRect(tx0, ty0, 250, 96);
+    ctx.beginPath(); ctx.moveTo(tx0, ty0 + 32); ctx.lineTo(tx0 + 250, ty0 + 32); ctx.moveTo(tx0, ty0 + 64); ctx.lineTo(tx0 + 250, ty0 + 64);
+    ctx.moveTo(tx0 + 90, ty0); ctx.lineTo(tx0 + 90, ty0 + 96); ctx.moveTo(tx0 + 170, ty0); ctx.lineTo(tx0 + 170, ty0 + 96); ctx.stroke();
+    ctx.font = 'bold 16px sans-serif';
+    [['SPLICE', 'WIRE', 'SQ'], ['SP-01', 'W12', '0.5'], ['SP-02', 'W27', '0.85']].forEach(function (r, i) {
+      r.forEach(function (t, j) { ctx.fillText(t, tx0 + 10 + j * 85, ty0 + 23 + i * 32); });
+    });
   }
   // 예시 글자 목록(PDF 글자 정보 흉내) — 글자 비교도 체험할 수 있게 그린 글자와 같은 값·위치로 둡니다
   function sampleText(v) {

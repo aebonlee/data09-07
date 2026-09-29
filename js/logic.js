@@ -16,7 +16,7 @@
     drawingId: '도면 ID', fileName: '파일명', partNo: '품번', partName: '품명', rev: 'REV',
     customer: '고객사', model: '기종', usage: '사용처', regDate: '등록일',
     connectors: '주요 커넥터', circuits: '회로 수', branches: '분기 수', wires: '주요 전선·보호재',
-    keywords: '구조 키워드', groupId: '그룹 ID', answerGroup: '담당자 정답 그룹'
+    keywords: '구조 키워드', groupId: '그룹 ID', answerGroup: '담당자 정답 그룹', dwgDate: '도면 일자'
   };
   // 엑셀 가져오기(열 맞추기)에서 고를 수 있는 도면 항목
   var IMPORT_FIELDS = ['partNo', 'partName', 'rev', 'customer', 'model', 'usage', 'regDate',
@@ -52,7 +52,7 @@
   }
 
   function emptyDb() {
-    return { drawings: [], groups: [], decisions: [], ecns: [], settings: defaultSettings() };
+    return { drawings: [], groups: [], decisions: [], ecns: [], housingMaster: [], settings: defaultSettings() };
   }
 
   // ── 공통 ─────────────────────────────────────────────────
@@ -1171,6 +1171,132 @@
     return regions;
   }
 
+  // ── 멀리 옮겨진 선 찾기 (2026-09-29 저녁 「문의02」) ──────────
+  // markMoved 는 몇 픽셀 밀린 영역만 봅니다. 표에 줄이 끼어들어 아래 줄이 몇 줄 내려가거나 커넥터 묶음을 도면 반대쪽으로
+  // 옮기면, 내용은 같은데 옮긴 자리 전체가 적색(추가)·파랑(삭제)으로 나옵니다. 여기서는 그런 선을 「이동」으로 걸러 냅니다.
+  //  1) 차이 선을 글자·기호 크기의 작은 조각으로 나눕니다(gap 2 픽셀 — 낱말 하나, 기호 하나 정도).
+  //  2) B 에 새로 생긴 조각과 A 에서 사라진 조각 가운데 크기·면적이 거의 같은 것끼리 「옮긴 거리 d」 에 표를 던집니다.
+  //     같이 옮겨진 무리(표의 여러 줄, 커넥터 묶음)는 같은 d 에 표가 모여 봉우리가 됩니다.
+  //  3) 조각마다 봉우리 d 들을 대 보아, 조각의 선이 d 만큼 떨어진 곳의 「상대 도면에서 사라진/새로 생긴 선」 과 거의 다 겹치면 이동으로 봅니다.
+  //     그대로 남아 있는 선이 아니라 사라진 선하고만 맞대므로, 도면 곳곳에 되풀이되는 같은 기호와 우연히 짝이 되지 않습니다.
+  //  4) 이동으로 설명되는 점은 diff 에서 빼서 moved 마스크로 옮기고, 설명되지 않는 점(옮긴 뒤 값까지 바뀐 곳)은 적색·파랑으로 남깁니다.
+  // d 는 언제나 A 위치 → B 위치(B = A + d). diff 를 직접 고칩니다. 돌려주는 값:
+  // {movedAdd, movedDel (Uint8Array), count, peaks: [{dx, dy, votes}], pieces: 이동으로 판정한 조각 수}
+  var OFF9 = [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+  function explainMoves(diff, w, h, opt) {
+    opt = opt || {};
+    var tol = opt.tol == null ? 1 : opt.tol, need = opt.need == null ? 0.9 : opt.need;
+    var minArea = opt.minArea == null ? 12 : opt.minArea, minVotes = opt.minVotes == null ? 3 : opt.minVotes;
+    var maxPeaks = opt.maxPeaks || 80, sizeTol = opt.sizeTol == null ? 2 : opt.sizeTol;
+    var n = w * h, movedAdd = new Uint8Array(n), movedDel = new Uint8Array(n);
+    var res = { movedAdd: movedAdd, movedDel: movedDel, count: 0, peaks: [], pieces: 0 };
+    if (!diff.addedCount && !diff.removedCount) return res;
+    var pa = components(diff.added, w, h, { gap: 2, minArea: minArea });
+    var pd = components(diff.removed, w, h, { gap: 2, minArea: minArea });
+    // 2) 크기 칸(가로·세로를 sizeTol+1 로 나눈 칸)으로 묶어 비슷한 조각끼리만 맞댑니다
+    var q = sizeTol + 1, bucket = {};
+    pd.forEach(function (c) { var k = Math.floor(c.w / q) + ',' + Math.floor(c.h / q); (bucket[k] = bucket[k] || []).push(c); });
+    var votes = {};
+    pa.forEach(function (c) {
+      var bw = Math.floor(c.w / q), bh = Math.floor(c.h / q), seen = {};
+      for (var i = -1; i <= 1; i++) for (var j = -1; j <= 1; j++) (bucket[(bw + i) + ',' + (bh + j)] || []).forEach(function (o) {
+        if (Math.abs(o.w - c.w) > sizeTol || Math.abs(o.h - c.h) > sizeTol || Math.abs(o.area - c.area) > Math.max(3, 0.2 * c.area)) return;
+        var dx = c.cx - o.cx, dy = c.cy - o.cy, key = dx + ',' + dy;
+        if (Math.abs(dx) + Math.abs(dy) <= tol + 1 || seen[key]) return;   // 흔들림 수준은 이동이 아닙니다
+        seen[key] = 1; votes[key] = (votes[key] || 0) + 1;
+      });
+    });
+    // 봉우리: 표가 많은 d 부터, 이미 고른 봉우리와 2 픽셀 안이면 합칩니다
+    var keys = Object.keys(votes).sort(function (x, y) { return votes[y] - votes[x]; }), peaks = [];
+    for (var ki = 0; ki < keys.length && peaks.length < maxPeaks; ki++) {
+      if (votes[keys[ki]] < minVotes) break;
+      var d = keys[ki].split(',').map(Number), near = false;
+      for (var pi = 0; pi < peaks.length; pi++) if (Math.abs(peaks[pi].dx - d[0]) <= 2 && Math.abs(peaks[pi].dy - d[1]) <= 2) { peaks[pi].votes += votes[keys[ki]]; near = true; break; }
+      if (!near) peaks.push({ dx: d[0], dy: d[1], votes: votes[keys[ki]] });
+    }
+    peaks.sort(function (x, y) { return y.votes - x.votes; });
+    res.peaks = peaks;
+    if (!peaks.length) return res;
+    var dRem = dilate(diff.removed, w, h, tol + 1), dAdd = dilate(diff.added, w, h, tol + 1);
+    // 3) 조각마다 봉우리를 대 봅니다(봉우리 둘레 ±1 픽셀 포함). sign: B 조각은 −d, A 조각은 +d 쪽을 봅니다
+    function tryPiece(c, src, target, sign, out) {
+      var pts = [];
+      for (var y = c.y; y < c.y + c.h; y++) for (var x = c.x; x < c.x + c.w; x++) if (src[y * w + x]) pts.push(x, y);
+      var np = pts.length / 2, best = null;
+      for (var k = 0; k < peaks.length; k++) {
+        for (var oi = 0; oi < OFF9.length; oi++) {
+          var ex = OFF9[oi][0], ey = OFF9[oi][1];   // 봉우리 자리를 먼저 — 점수가 같으면 봉우리 값을 씁니다
+          var sx = sign * (peaks[k].dx + ex), sy = sign * (peaks[k].dy + ey), hit = 0;
+          for (var j = 0; j < pts.length; j += 2) {
+            var tx = pts[j] + sx, ty = pts[j + 1] + sy;
+            if (tx >= 0 && ty >= 0 && tx < w && ty < h && target[ty * w + tx]) hit++;
+          }
+          var sc = hit / np;
+          if (sc >= need && (!best || sc > best.s)) best = { s: sc, sx: sx, sy: sy, dx: peaks[k].dx + ex, dy: peaks[k].dy + ey };
+        }
+        if (best && best.s >= 0.999) break;
+      }
+      if (!best) return;
+      res.pieces++;
+      // 설명되지 않는 점이 몇 개뿐이면(글자 가장자리 번짐) 조각 전체를 이동으로 봅니다. 많으면 그 점은 적색·파랑으로 남겨 「옮긴 뒤 바뀐 곳」 으로 보입니다
+      var whole = (1 - best.s) * np < Math.max(8, 0.1 * np);
+      for (var m = 0; m < pts.length; m += 2) {
+        var px = pts[m], py = pts[m + 1], qx = px + best.sx, qy = py + best.sy;
+        if (whole || (qx >= 0 && qy >= 0 && qx < w && qy < h && target[qy * w + qx])) out[py * w + px] = 1;
+      }
+      c.d = { dx: best.dx, dy: best.dy };
+    }
+    pa.forEach(function (c) { tryPiece(c, diff.added, dRem, -1, movedAdd); });
+    pd.forEach(function (c) { tryPiece(c, diff.removed, dAdd, 1, movedDel); });
+    // 4) 이동 조각 바로 옆에 붙은 부스러기(crumb 점 미만 — 선 번짐·교차점)도 이동으로 합칩니다. 목록이 잘게 쪼개지지 않게 하기 위해서입니다
+    var crumb = opt.crumb == null ? 20 : opt.crumb;
+    [[diff.added, movedAdd], [diff.removed, movedDel]].forEach(function (pr) {
+      var src = pr[0], mv = pr[1], rest = new Uint8Array(n), near = dilate(mv, w, h, opt.crumbReach == null ? 3 : opt.crumbReach);
+      for (var i = 0; i < n; i++) rest[i] = src[i] && !mv[i] ? 1 : 0;
+      components(rest, w, h, { gap: 1, minArea: 1 }).forEach(function (c) {
+        if (c.area >= crumb) return;
+        var touch = false, y, x;
+        for (y = c.y; y < c.y + c.h && !touch; y++) for (x = c.x; x < c.x + c.w; x++) if (rest[y * w + x] && near[y * w + x]) { touch = true; break; }
+        if (!touch) return;
+        for (y = c.y; y < c.y + c.h; y++) for (x = c.x; x < c.x + c.w; x++) if (rest[y * w + x]) mv[y * w + x] = 1;
+      });
+    });
+    // 5) 이동으로 설명된 점을 diff 에서 뺍니다
+    var na = 0, nr = 0;
+    for (var i2 = 0; i2 < n; i2++) {
+      if (movedAdd[i2]) { diff.added[i2] = 0; res.count++; }
+      if (movedDel[i2]) { diff.removed[i2] = 0; res.count++; }
+      na += diff.added[i2]; nr += diff.removed[i2];
+    }
+    diff.addedCount = na; diff.removedCount = nr;
+    res.piecesAdd = pa.filter(function (c) { return c.d; });
+    res.piecesDel = pd.filter(function (c) { return c.d; });
+    return res;
+  }
+  // 차이 영역마다 「이동으로 설명되는 몫」을 붙입니다. regions 는 explainMoves 전에 만든 목록(상자 수가 그대로 유지되게),
+  // before = explainMoves 전 diff 의 {added, removed} 사본. 몫이 need(기본 0.9) 이상이면 g.moved = {dx, dy, far: true, share} (보라),
+  // 그보다 작지만 있으면 g.movedShare 만 붙여 「일부 이동」으로 보입니다(나머지는 옮긴 뒤 달라진 선).
+  function tagMovedRegions(regions, before, mv, w, opt) {
+    opt = opt || {};
+    var need = opt.need == null ? 0.9 : opt.need;
+    regions.forEach(function (g) {
+      var add = g.type === '추가', src = add ? before.added : before.removed, m = add ? mv.movedAdd : mv.movedDel;
+      var all = 0, got = 0;
+      for (var y = g.y; y < g.y + g.h; y++) for (var x = g.x; x < g.x + g.w; x++) { var i = y * w + x; if (src[i]) { all++; if (m[i]) got++; } }
+      if (!all || !got) return;
+      var share = got / all, tally = {}, top = null;
+      (add ? mv.piecesAdd : mv.piecesDel).forEach(function (c) {
+        if (c.cx < g.x || c.cx > g.x + g.w || c.cy < g.y || c.cy > g.y + g.h) return;
+        var k = c.d.dx + ',' + c.d.dy; tally[k] = (tally[k] || 0) + c.area;
+        if (!top || tally[k] > tally[top]) top = k;
+      });
+      var d = top ? top.split(',').map(Number) : [0, 0];
+      if (share >= need) g.moved = { dx: d[0], dy: d[1], far: true, share: Math.round(share * 100) / 100, mixed: Object.keys(tally).length > 1 };
+      else g.movedShare = Math.round(share * 100) / 100;
+    });
+    return regions;
+  }
+
   // 블록별 정렬 — 표가 길어져 아래 그림이 통째로 밀린 것처럼 「부분마다 다르게 옮겨진」 개정 도면용.
   // A 를 tile 픽셀 칸으로 나눠 칸마다 B 에서 가장 잘 겹치는 이동(dx, dy)을 찾습니다(B 위치 = A 위치 + d).
   // 먼저 factor 배로 줄인 그림에서 ±R 을 넓게 찾고, 원래 크기에서 ±factor 로 다듬습니다.
@@ -1426,11 +1552,276 @@
     return out;
   }
 
+  // ── 제목란 읽기 (2026-09-29 저녁 「문의04」) ──────────────────────
+  // 실제 도면 제목란은 「라벨(작은 글자) 옆이나 아래에 값(큰 글자)」 이 칸마다 따로 놓여 있어서,
+  // 글자를 한 줄로 이어 붙여 라벨 뒤를 찾는 extractFields 로는 엉뚱한 값(다음 칸의 라벨)이 잡힙니다.
+  // 여기서는 PDF 글자 조각의 위치(x·y·크기)로 라벨마다 가장 가까운 값을 고릅니다.
+  // items = [{str, x, y, w, h}] — x = 글자 왼쪽, y = 글자 밑줄(위에서부터 잰 값), h = 글자 높이. pw·ph = 쪽 크기.
+  // 확인한 양식: 두산밥캣코리아 제목란(MODEL · Rev. · NAME · NO. · 날짜) — 비교군 01 도면의 글자 정보로 확인.
+  // HD현대 제목란(품번·품명·기종·명칭·NO.)은 받은 PDF 가 글자를 선으로 그려 글자 정보가 없어 라벨만 넣어 둔 가정입니다.
+  var TB_LABELS = [
+    { k: 'partNo', re: /^(?:DWG\.?\s*NO\.?|DRAWING\s*NO\.?|NO\.?|PART\s*NO\.?|PART\s*NUMBER|P\/N|도\s*번|품\s*번|도면\s*번호)$/i,
+      ok: function (v) { return /\d/.test(v) && v.replace(/\s/g, '').length >= 5 && !isDateStr(v); } },
+    { k: 'rev', re: /^(?:REV\.?|REVISION|REV\.?\s*NO\.?|개\s*정|개정\s*번호)$/i, ok: function (v) { return /^[A-Z0-9]{1,3}$/i.test(v); } },
+    { k: 'partName', re: /^(?:PART\s*NAME|NAME|TITLE|DESCRIPTION|품\s*명|명\s*칭)$/i,
+      ok: function (v) { return /[A-Z가-힣]{2,}/i.test(v) && !/^\d/.test(v) && !/CO\.?,?\s*LTD/i.test(v); } },
+    { k: 'model', re: /^(?:MODEL|기\s*종|차\s*종)$/i, ok: function (v) { return /[A-Z0-9]/i.test(v) && v.length <= 24 && !isDateStr(v); } },
+    { k: 'dwgDate', re: /^(?:DATE|DWG\.?\s*DATE|일\s*자|작성\s*일|도면\s*일자)$/i, ok: function (v) { return isDateStr(v); } }
+  ];
+  // 값이 아닌 라벨(칸 이름)들 — 값 후보에서 뺍니다
+  var TB_OTHER = /^(?:MATERIAL|MAT\.?|MAT\s*NO\.?|QTY|Q'?TY|REMARKS?|SCALE|W\.?\s*T\.?|DIE\s*NO\.?|REF\.?\s*DWG|SHEET\s*#?|SHEETS?|WARNING|APPROVED|CHECKED|DRAWN|DESIGNED|재\s*질|수\s*량|비\s*고|척\s*도|개\s*수|중\s*량|소재\s*NO\.?|금형\s*NO\.?|관련\s*도면|[A-Z])$/i;
+  function isDateStr(v) { return /^(?:\d{2}|\d{4})[.\-\/]\d{1,2}[.\-\/]\d{1,2}$/.test(String(v).trim()); }
+  function normDate(v) {
+    var m = String(v).trim().match(/^(\d{2}|\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})$/);
+    if (!m) return '';
+    var y = m[1].length === 2 ? 2000 + +m[1] : +m[1];
+    return y + '-' + pad(+m[2], 2) + '-' + pad(+m[3], 2);
+  }
+  // 회사명 → 고객사 이름(가정 — 기획서 11.2). 대문자·공백 무시로 찾습니다.
+  var CUSTOMER_HINTS = [[/DOOSAN\s*BOBCAT/i, '두산밥캣코리아'], [/HD\s*HYUNDAI/i, 'HD현대'], [/HYUNDAI\s*(?:CONSTRUCTION|INFRACORE)/i, 'HD현대'], [/두산\s*밥캣/, '두산밥캣코리아'], [/HD\s*현대/, 'HD현대']];
+  function customerFromText(text) {
+    var t = String(text || '');
+    for (var i = 0; i < CUSTOMER_HINTS.length; i++) if (CUSTOMER_HINTS[i][0].test(t)) return CUSTOMER_HINTS[i][1];
+    return '';
+  }
+  function tbLabel(str) {
+    for (var i = 0; i < TB_LABELS.length; i++) if (TB_LABELS[i].re.test(str)) return TB_LABELS[i];
+    return null;
+  }
+  // 제목란 영역: 쪽의 오른쪽 아래(가로 45% 오른쪽 · 세로 55% 아래). 도면 안 표 머리(NO. · WIRE …)를 라벨로 잘못 잡지 않기 위해서입니다.
+  function titleRegionItems(items, pw, ph) {
+    return (items || []).filter(function (t) { return String(t.str || '').trim() && t.x + (t.w || 0) / 2 > pw * 0.45 && t.y > ph * 0.55; });
+  }
+  function titleBlockFields(items, pw, ph) {
+    var all = (items || []).map(function (t) { return { str: String(t.str || '').replace(/\s+/g, ' ').trim(), x: t.x, y: t.y, w: t.w || 0, h: t.h || 8 }; })
+      .filter(function (t) { return t.str; });
+    var reg = pw && ph ? titleRegionItems(all, pw, ph) : all;
+    var labels = [], values = [];
+    reg.forEach(function (t) {
+      var lb = tbLabel(t.str);
+      if (lb) labels.push({ t: t, def: lb });
+      else if (!TB_OTHER.test(t.str)) values.push(t);
+    });
+    // 라벨-값 짝마다 거리 점수(작을수록 가까움). 값 글자가 클수록(제목란 값은 라벨보다 큼) 점수를 줄여 줍니다.
+    var pairs = [];
+    labels.forEach(function (L0) {
+      var l = L0.t, hl = l.h;
+      values.forEach(function (v, vi) {
+        if (!L0.def.ok(v.str)) return;
+        var big = Math.min(3, Math.max(1, v.h / hl)), d = null;
+        var gapX = v.x - (l.x + l.w);
+        if (Math.abs(v.y - l.y) <= Math.max(l.h, v.h) * 0.9 && gapX >= -2 && gapX <= 12 * hl) d = Math.max(0, gapX);               // 오른쪽
+        else if (v.y > l.y && v.y - l.y <= 5 * Math.max(hl, v.h) && v.x >= l.x - 3 * hl && v.x <= l.x + 25 * hl) d = (v.y - l.y) + 0.3 * Math.abs(v.x - l.x); // 아래
+        if (d != null) pairs.push({ k: L0.def.k, v: vi, s: d / big, l: l });
+      });
+    });
+    pairs.sort(function (a, b) { return a.s - b.s; });
+    var out = {}, usedV = {}, at = {};
+    pairs.forEach(function (p) {
+      if (out[p.k] != null || usedV[p.v]) return;
+      out[p.k] = values[p.v].str; usedV[p.v] = 1; at[p.k] = p;
+    });
+    // 품명은 두 줄(예: HARNESS / AIRCON - POWER)인 경우가 많아 바로 아래의 같은 크기 글자를 이어 붙입니다
+    if (at.partName) {
+      var cur = values[at.partName.v], parts = [cur.str], l = at.partName.l;
+      for (var guard = 0; guard < 3; guard++) {
+        var nx = null;
+        values.forEach(function (v, vi) {
+          if (usedV[vi] || v === cur) return;
+          if (v.y > cur.y && v.y - cur.y <= 3 * cur.h && Math.abs(v.h - cur.h) <= cur.h * 0.25 && v.x >= l.x - 3 * l.h && v.x <= l.x + 25 * l.h &&
+              /[A-Z가-힣]{2,}/i.test(v.str) && !/CO\.?,?\s*LTD/i.test(v.str) && (!nx || v.y < nx.v.y)) nx = { v: v, i: vi };
+        });
+        if (!nx) break;
+        parts.push(nx.v.str); usedV[nx.i] = 1; cur = nx.v;
+      }
+      out.partName = parts.join(' ');
+    }
+    // 날짜 라벨이 없는 양식(두산 — D·F·C·H 칸 옆 날짜)은 제목란의 첫 날짜를 씁니다
+    if (!out.dwgDate) {
+      var ds = values.filter(function (v) { return isDateStr(v.str); }).sort(function (a, b) { return a.y - b.y || a.x - b.x; });
+      if (ds.length) out.dwgDate = ds[0].str;
+    }
+    if (out.dwgDate) out.dwgDate = normDate(out.dwgDate);
+    var cust = customerFromText(reg.map(function (t) { return t.str; }).join(' '));
+    if (cust) out.customer = cust;
+    Object.keys(out).forEach(function (k) { if (isBlank(out[k])) delete out[k]; });
+    return out;
+  }
+
+  // 파일명 규칙(수강생 실제 파일명 — 2026-09-29): 「999999-12345A MCV JOINT HARNESS - 260605.pdf」 · 「999999-12345_0001.pdf」 (품번은 가린 값)
+  //  앞 품번(숫자6-숫자4~6 + 끝 영문 1자), 끝의 여섯 자리 날짜(YYMMDD), 가운데 낱말 = 품명 추정. _0001 같은 일련번호는 버립니다.
+  //  품번 끝 영문 1자는 REV 로 추정합니다(15289 → 15289A = REV A, 수강생 캡처의 입력값과 같음). 모두 「파일명·추정」 표시.
+  function fileNameFields(name) {
+    var base = String(name || '').replace(/\.[^.]+$/, '').replace(/_\d{3,4}$/, '').trim(), out = {};
+    var m = base.match(/^(\d{5,7}-\d{3,6})([A-Z])?(?![A-Z0-9])/i);
+    if (!m) return out;
+    out.partNo = m[1] + (m[2] || '').toUpperCase();
+    if (m[2]) out.rev = m[2].toUpperCase();
+    var rest = base.slice(m[0].length);
+    var dm = rest.match(/[-_\s]+(\d{2})(\d{2})(\d{2})\s*$/);
+    if (dm && +dm[2] >= 1 && +dm[2] <= 12 && +dm[3] >= 1 && +dm[3] <= 31) { out.dwgDate = '20' + dm[1] + '-' + dm[2] + '-' + dm[3]; rest = rest.slice(0, dm.index); }
+    var nm = rest.replace(/[_]+/g, ' ').replace(/^[\s\-]+|[\s\-]+$/g, '').replace(/\s+/g, ' ');
+    if (/[A-Z가-힣]{2,}/i.test(nm)) out.partName = nm;
+    return out;
+  }
+
+  // PDF 한 건에서 도면 정보 뽑기: 제목란(위치) > 글자 라벨(extractFields) > 파일명 순서로 채웁니다.
+  // 돌려주는 source: title = 제목란, auto = 글자 라벨, file = 파일명, guess = 추정.
+  function extractFromPdf(text, items, pw, ph, fileName, settings) {
+    var ex = extractFields(text, '', settings), f = ex.fields, src = ex.source;
+    var tb = items && items.length ? titleBlockFields(items, pw, ph) : {};
+    if (Object.keys(tb).length) {
+      // 제목란을 찾았으면 글자 라벨로 잡은 제목란 항목(품번·REV·품명·기종·고객사)은 믿지 않습니다 — 실제 도면에서 다음 칸 라벨이 잡혔습니다
+      ['partNo', 'rev', 'partName', 'model', 'customer'].forEach(function (k) { if (src[k] === 'auto') { delete f[k]; delete src[k]; } });
+    }
+    Object.keys(tb).forEach(function (k) { f[k] = tb[k]; src[k] = 'title'; });
+    // 사용처 라벨(APPLY 등)이 주기 문장에서 잡혀 긴 문장이 들어간 경우는 버립니다(실제 도면: 「APPLY THE RESIN TUBE …」)
+    if (src.usage === 'auto' && String(f.usage || '').length > 20) { delete f.usage; delete src.usage; }
+    if (!f.customer) { var c = customerFromText(text); if (c) { f.customer = c; src.customer = 'guess'; } }
+    var fn = fileNameFields(fileName);
+    if (!Object.keys(fn).length) {
+      // 예전 규칙(예시 파일 HN-A0231_C.pdf → 품번 HN-A0231 · REV C)
+      var old = extractFields('', fileName, settings).fields;
+      if (old.partNo) fn.partNo = old.partNo;
+      if (old.rev) fn.rev = old.rev;
+    }
+    Object.keys(fn).forEach(function (k) {
+      if (isBlank(f[k])) { f[k] = fn[k]; src[k] = k === 'partNo' ? 'file' : 'guess'; }
+    });
+    return { fields: f, source: src, missing: missingFields(f), title: tb };
+  }
+
+  // ── 하우징 → ASSY 자재 BOM 구성 (2026-09-29 저녁 「문의03」) ──────────
+  // 마스터 표(하우징 품번 → 딸린 자재·수량)는 회사 자료라 도구에 들어 있지 않습니다. 사용자가 엑셀·CSV 로 불러옵니다.
+  // 열 이름은 아래 낱말로 찾습니다(실제 양식 확인 전 가정 — 기획서 11.2).
+  var HM_HEAD = {
+    housing: /하우징|HOUSING|커넥터\s*품번|CONNECTOR/i,
+    item: /자재\s*(?:품번|코드|번호)|구성\s*(?:품번|자재)|하위\s*품번|품목\s*코드|CHILD|COMPONENT|ASSY\s*자재|^\s*품번\s*$|PART\s*NO/i,
+    name: /자재\s*명|품목\s*명|품\s*명|NAME|DESC/i,
+    kind: /구분|종류|TYPE|KIND/i,
+    qty: /수량|QTY|소요/i,
+    unit: /단위|UNIT/i,
+    basis: /기준|BASIS|PER/i,
+    csa: /전선|CSA|SQ|굵기|WIRE|AWG/i,
+    pins: /핀\s*수|극\s*수|CAVITY|CAV|PINS?/i,
+    note: /비고|NOTE|REMARK|적요/i
+  };
+  function csaRange(v) {
+    var s = String(v == null ? '' : v).replace(/SQ|MM2|㎟|mm²/gi, '').trim();
+    if (!s) return null;
+    var m = s.match(/^(\d+(?:\.\d+)?)\s*(?:~|-|–|to)\s*(\d+(?:\.\d+)?)$/i);
+    if (m) return { min: +m[1], max: +m[2] };
+    var n = toNum(s);
+    return n == null ? null : { min: n, max: n };
+  }
+  // 「회로당」 = 사용하는 회로(전선) 하나에 하나씩 드는 자재(단자·씰), 「하우징당」 = 하우징 하나에 정해진 수(LOCK·캡)
+  function basisOf(v, kind) {
+    var s = String(v || '') + ' ' + String(kind || '');
+    if (/회로|핀|CAV|CIRCUIT|PIN|WIRE|전선/i.test(String(v || ''))) return '회로당';
+    if (/하우징|HOUSING|EA|개당/i.test(String(v || ''))) return '하우징당';
+    return /단자|TERMINAL|CONTACT|SOCKET|PIN|씰|SEAL/i.test(s) ? '회로당' : '하우징당';
+  }
+  // 2차원 배열(엑셀 시트) → 마스터 행. 머리행은 위 10행 안에서 「하우징」 열과 「자재」 열이 함께 있는 행.
+  // 하우징 칸이 비어 있으면 윗줄 하우징을 이어 씁니다(병합 셀로 만든 표).
+  function parseHousingMaster(aoa) {
+    aoa = aoa || [];
+    var hi = -1, col = {};
+    for (var r = 0; r < Math.min(10, aoa.length) && hi < 0; r++) {
+      var row = (aoa[r] || []).map(function (x) { return String(x == null ? '' : x).trim(); }), c = {};
+      row.forEach(function (hd, i) {
+        if (!hd) return;
+        Object.keys(HM_HEAD).forEach(function (k) {
+          if (c[k] != null) return;
+          if (k === 'item' && HM_HEAD.housing.test(hd)) return;   // 「하우징 품번」 을 자재 열로 잡지 않게
+          if (k === 'name' && (HM_HEAD.housing.test(hd) || HM_HEAD.item.test(hd) && !/명/.test(hd))) return;
+          if (k === 'pins' && HM_HEAD.csa.test(hd)) return;
+          if (HM_HEAD[k].test(hd)) c[k] = i;
+        });
+      });
+      if (c.housing != null && c.item != null) { hi = r; col = c; }
+    }
+    if (hi < 0) return { rows: [], error: '머리행을 찾지 못했습니다 — 「하우징 품번」 열과 「자재 품번」 열이 있어야 합니다.' };
+    var out = [], last = '';
+    aoa.slice(hi + 1).forEach(function (row) {
+      row = row || [];
+      function g(k) { return col[k] == null ? '' : String(row[col[k]] == null ? '' : row[col[k]]).trim(); }
+      var hs = g('housing') || last, item = g('item');
+      if (!item) { if (g('housing')) last = g('housing'); return; }
+      last = hs;
+      var q = toNum(g('qty')), rg = csaRange(g('csa'));
+      out.push({ housing: norm(hs), item: item, name: g('name'), kind: g('kind'), qty: q == null ? 1 : q, unit: g('unit') || 'EA',
+        basis: basisOf(g('basis'), g('kind') + ' ' + g('name')), csaText: g('csa'), csaMin: rg ? rg.min : null, csaMax: rg ? rg.max : null,
+        pins: toNum(g('pins')), note: g('note') });
+    });
+    return { rows: out, headerRow: hi + 1, columns: Object.keys(col) };
+  }
+  function escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  // 도면 글자·주요 커넥터 칸에서 마스터에 있는 하우징 품번을 찾아 개수를 셉니다.
+  // 품번 안의 하이픈 앞뒤 공백은 무시합니다(PDF 글자가 「DT06 - 2S」 처럼 떨어져 나오는 경우).
+  function findHousings(text, connectors, master) {
+    var keys = uniq((master || []).map(function (r) { return r.housing; })), up = String(text || '').toUpperCase(), list = splitList(connectors), out = [];
+    keys.forEach(function (k) {
+      var re = new RegExp('(?:^|[^A-Z0-9])' + escRe(k).replace(/\\-|-/g, '\\s*-\\s*') + '(?![A-Z0-9])', 'g'), n = 0;
+      while (re.exec(up)) n++;
+      if (n) out.push({ housing: k, count: n, from: '도면 글자' });
+      else if (list.indexOf(k) >= 0) out.push({ housing: k, count: 1, from: '주요 커넥터 칸' });
+    });
+    return out;
+  }
+  // 하우징 한 개의 핀 수 기본값: 마스터의 핀 수 열 → 없으면 품번 모양(-2S · -12P 처럼 「숫자+S/P」)에서 추정 → 없으면 1
+  function housingPins(housing, master) {
+    var r = (master || []).filter(function (x) { return x.housing === norm(housing) && x.pins; })[0];
+    if (r) return r.pins;
+    var m = String(housing).match(/-(\d{1,2})[SP](?![0-9])/i);
+    return m ? +m[1] : 1;
+  }
+  // BOM 펼치기. found = [{housing, count(도면 안 개수), circuits(하우징 하나에 쓰는 회로 수), csa(전선 굵기 SQ)}]
+  // 돌려주는 rows: [{출처, 하우징, 품목코드, 품목명, 구분, 수량, 단위, 근거, 확인}] — 하우징 행 다음에 딸린 자재 행.
+  function expandHousingBom(found, master, opt) {
+    opt = opt || {};
+    var rows = [];
+    (found || []).forEach(function (f) {
+      var hs = norm(f.housing), cnt = toNum(f.count) || 0, cir = toNum(f.circuits), csa = toNum(f.csa);
+      if (cir == null) cir = housingPins(hs, master);
+      var kids = (master || []).filter(function (r) { return r.housing === hs; });
+      rows.push({ 출처: f.from || '도면', 하우징: hs, 품목코드: hs, 품목명: '', 구분: '하우징', 수량: cnt, 단위: 'EA', 근거: (f.from === '직접 입력' ? '직접 입력 ' : '도면에서 ') + cnt + '곳', 확인: kids.length ? '' : '마스터에 없음 — 딸린 자재를 불러오지 못했습니다' });
+      kids.forEach(function (r) {
+        var chk = '';
+        if (r.csaMin != null) {
+          if (csa == null) chk = '전선 굵기 입력 필요(적용 ' + r.csaText + ')';
+          else if (csa < r.csaMin - 1e-9 || csa > r.csaMax + 1e-9) return;   // 굵기가 맞지 않는 단자는 뺍니다
+        }
+        var q = r.basis === '회로당' ? r.qty * cir * cnt : r.qty * cnt;
+        rows.push({ 출처: 'ASSY 마스터 (' + hs + ')', 하우징: hs, 품목코드: r.item, 품목명: r.name, 구분: r.kind, 수량: Math.round(q * 1000) / 1000, 단위: r.unit,
+          근거: r.basis === '회로당' ? r.qty + ' × 회로 ' + cir + ' × ' + cnt + '곳' : r.qty + ' × ' + cnt + '곳', 확인: chk });
+      });
+    });
+    if (!opt.merge) return rows;
+    // 같은 품목코드 합치기(출처는 이어 적음)
+    var by = {}, order = [];
+    rows.forEach(function (r) {
+      var k = norm(r.품목코드);
+      if (!by[k]) { by[k] = Object.assign({}, r); order.push(k); return; }
+      by[k].수량 = Math.round((by[k].수량 + r.수량) * 1000) / 1000;
+      if (by[k].출처.indexOf(r.출처) < 0) by[k].출처 += ' · ' + r.출처;
+      if (by[k].하우징.indexOf(r.하우징) < 0) by[k].하우징 += ', ' + r.하우징;
+      if (r.확인 && by[k].확인.indexOf(r.확인) < 0) by[k].확인 = (by[k].확인 ? by[k].확인 + ' / ' : '') + r.확인;
+      by[k].근거 = '합계';
+    });
+    return order.map(function (k) { return by[k]; });
+  }
+  // 엑셀 저장용: ERP BOM 과 같은 순서(품목코드·품목명·규격·단위·수량·적요) + 출처·확인
+  function sheetHousingBom(rows, drawingLabel) {
+    var out = [['도면', drawingLabel || '', '', '', '', '', ''], ['품목코드', '품목명', '구분', '단위', '수량', '출처', '근거', '확인']];
+    rows.forEach(function (r) { out.push([r.품목코드, r.품목명, r.구분, r.단위, r.수량, r.출처, r.근거, r.확인]); });
+    return out;
+  }
+
   // ── 백업(JSON) ───────────────────────────────────────────
   function normalizeDb(p) {
     var db = emptyDb();
     if (!p || typeof p !== 'object') return db;
-    ['drawings', 'groups', 'decisions', 'ecns'].forEach(function (k) { if (Array.isArray(p[k])) db[k] = p[k]; });
+    ['drawings', 'groups', 'decisions', 'ecns', 'housingMaster'].forEach(function (k) { if (Array.isArray(p[k])) db[k] = p[k]; });
     if (p.settings && typeof p.settings === 'object') {
       var s = defaultSettings();
       Object.keys(s).forEach(function (k) { if (p.settings[k] != null) s[k] = p.settings[k]; });
@@ -1462,9 +1853,11 @@
     fitSimilarity: fitSimilarity, applySimilarity: applySimilarity,
     guessKeyColumn: guessKeyColumn, parsePastedTable: parsePastedTable, tableDiff: tableDiff,
     drawingPartRows: drawingPartRows, partRowKey: partRowKey, sheetTableDiff: sheetTableDiff,
-    findFrame: findFrame, frameTransform: frameTransform, bestShift: bestShift, composeShift: composeShift, textDiff: textDiff, markMoved: markMoved, blockAlign: blockAlign, clipDiff: clipDiff, pointsBox: pointsBox,
+    findFrame: findFrame, frameTransform: frameTransform, bestShift: bestShift, composeShift: composeShift, textDiff: textDiff, markMoved: markMoved, explainMoves: explainMoves, tagMovedRegions: tagMovedRegions, blockAlign: blockAlign, clipDiff: clipDiff, pointsBox: pointsBox,
     parseBomSheet: parseBomSheet, defaultCompareCols: defaultCompareCols, editDistance: editDistance,
-    replacementCandidates: replacementCandidates, materialsFromDiff: materialsFromDiff, filledMaterials: filledMaterials
+    replacementCandidates: replacementCandidates, materialsFromDiff: materialsFromDiff, filledMaterials: filledMaterials,
+    titleBlockFields: titleBlockFields, titleRegionItems: titleRegionItems, fileNameFields: fileNameFields, extractFromPdf: extractFromPdf, customerFromText: customerFromText, normDate: normDate,
+    parseHousingMaster: parseHousingMaster, findHousings: findHousings, housingPins: housingPins, expandHousingBom: expandHousingBom, sheetHousingBom: sheetHousingBom, csaRange: csaRange
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HNLogic = api;

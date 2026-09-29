@@ -58,7 +58,7 @@ begin
   perform public._assert(v_bad is null, '두 번 적용 후 정책 수가 그대로 — 일반 표 4개, decision_log 2개 (어긋남: ' || coalesce(v_bad, '없음') || ')');
   perform public._assert_eq(
     (select count(*) from pg_trigger where tgname like '%\_updated\_at' and not tgisinternal),
-    8::bigint, '두 번 적용 후 updated_at 트리거 8개');
+    9::bigint, '두 번 적용 후 updated_at 트리거 9개 (housing_master 포함)');
 end $t$;
 
 do $t$ begin raise notice '[프로젝트] 함수 권한(proacl)'; end $t$;
@@ -109,6 +109,17 @@ begin
     values (v_ecn, 1, '대체', 'WR-0085', 1, 'WR-0125', 1), (v_ecn, 2, '', '', null, '', null);
   insert into public.ecn_horizontal (ecn_id, line_no, drawing_id, relation, applies)
     values (v_ecn, 1, 'DWG-0008', '유사 도면 82점', '검토 중');
+  -- 2026-09-29 저녁: 도면 자동 읽기 칸 · 하우징 마스터
+  update public.drawing set dwg_date = '2026-06-30', title_items = '[{"str":"NO.","x":1,"y":2}]', bom_inputs = '{"DT06-2S-CE06":{"count":3,"circuits":2}}'
+    where drawing_id = 'DWG-0001';
+  insert into public.housing_master (housing, item, name, kind, qty, basis, csa_text, csa_min, csa_max)
+    values ('DT06-2S-CE06', 'EX-LK-2S', 'LOCK', 'LOCK', 1, '하우징당', '', null, null),
+           ('DT06-2S-CE06', 'EX-TM-S16-A', '단자', '단자', 1, '회로당', '0.5~1.0', 0.5, 1.0);
+  perform public._assert_eq((select count(*) from public.housing_master), 2::bigint, 'A 는 자기 하우징 마스터 2행을 본다');
+  perform public._assert_raises($q$insert into public.housing_master (housing, item) values ('DT06-2S-CE06', 'EX-LK-2S')$q$, '23505', '같은 하우징·자재는 두 번 넣지 못한다(upsert 기준)');
+  perform public._assert_raises($q$insert into public.housing_master (housing, item, basis) values ('X', 'Y', '개당')$q$, '23514', '수량 기준은 하우징당·회로당만');
+  perform public._assert_raises($q$insert into public.housing_master (housing, item, csa_min, csa_max) values ('X', 'Z', 2, 1)$q$, '23514', '전선 굵기 범위는 min <= max');
+  perform public._assert_raises($q$update public.drawing set title_items = '{}' where drawing_id = 'DWG-0001'$q$, '23514', 'title_items 는 배열');
 
   perform public._assert_eq((select count(*) from public.ecn_impact), 9::bigint, 'A 는 자기 ECN 의 영향도 9행을 본다');
   perform public._assert_eq((select count(*) from public.ecn_receipt), 6::bigint, 'A 는 자기 ECN 의 수신 부서 6행을 본다');
@@ -141,13 +152,13 @@ do $t$
 declare t text;
 begin
   foreach t in array array['app_settings','drawing','drawing_group','decision_log','ecn',
-                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal']
+                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal','housing_master']
   loop
     perform public._assert_rows(format('select 1 from public.%I', t), 0, 'B 에게 A 의 ' || t || ' 가 안 보인다');
     perform public._assert_rows(format('delete from public.%I', t), 0, 'B 는 A 의 ' || t || ' 를 못 지운다');
   end loop;
   foreach t in array array['app_settings','drawing','drawing_group','ecn',
-                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal']
+                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal','housing_master']
   loop
     perform public._assert_rows(format('update public.%I set updated_at = now()', t), 0, 'B 는 A 의 ' || t || ' 를 못 고친다');
   end loop;
@@ -185,7 +196,7 @@ do $t$
 declare t text;
 begin
   foreach t in array array['app_settings','drawing','drawing_group','decision_log','ecn',
-                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal']
+                           'ecn_receipt','ecn_material','ecn_impact','ecn_horizontal','housing_master']
   loop
     perform public._assert_rows(format('select 1 from public.%I', t), 0, 'anon 에게 ' || t || ' 가 안 보인다');
   end loop;
