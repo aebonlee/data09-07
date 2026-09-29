@@ -447,7 +447,8 @@
   // 5절 증감(자동): 신규·삭제·수량변경은 변경 후 − 변경 전, 그 밖은 "-"
   function materialDelta(m) {
     if (isBlank(m.type)) return '';
-    if (m.type === '수량변경' || m.type === '신규' || m.type === '삭제') return N(m.afterQty) - N(m.beforeQty);
+    // 소수 수량(전선 길이 1.2 → 2.6 M)의 뺄셈 오차(1.4000000000000001)를 없애려고 소수 6자리에서 반올림합니다
+    if (m.type === '수량변경' || m.type === '신규' || m.type === '삭제') return Math.round((N(m.afterQty) - N(m.beforeQty)) * 1e6) / 1e6;
     return '-';
   }
   function typeCounts(materials) {
@@ -737,7 +738,9 @@
 
   // ── 설계변경통보서 1건 (ECN OUTPUT 양식 배치, A~P 16열) ─────────
   // 셀 값은 계산된 값으로 넣습니다(수식 대신). merges 는 양식의 병합 범위를 따릅니다.
-  function ecnReport(e, today) {
+  // opt.figure = {heightPx, caption} 이면 9절에 그림 자리를 비워 두고 그 위치를 figure 로 돌려줍니다(그림은 xlsx-image.js 가 넣음).
+  function ecnReport(e, today, opt) {
+    opt = opt || {};
     var R = [];
     function row(n) { while (R.length < n) R.push(new Array(16).fill('')); return R[n - 1]; }
     function set(ref, v) {
@@ -837,24 +840,37 @@
     });
     set(at('I57'), e.remarks); rg('I57', 'P61');
     set(at('A62'), '9. 설계 변경 상세 — 변경 전 / 변경 후 (도면 캡처·사진 첨부)'); rg('A62', 'P62');
-    set(at('A63'), e.detailMemo || '(1단계 도구는 그림을 넣지 않습니다. 캡처는 이 엑셀에 직접 붙여 넣으세요.)'); rg('A63', 'P76');
+    var figure = null, rowsHpx = [];
+    if (opt.figure) {
+      // 9절: 첫 줄은 설명, 그 아래 13줄(64~76행)을 그림 높이에 맞춰 늘립니다
+      set(at('A63'), [e.detailMemo, opt.figure.caption].filter(function (x) { return !isBlank(x); }).join('\n')); rg('A63', 'P63');
+      var r63 = +at('A63').slice(1);
+      rowsHpx[r63 - 1] = 48;
+      var per = Math.max(20, Math.ceil((opt.figure.heightPx || 260) / 13));
+      for (var fr = 1; fr <= 13; fr++) rowsHpx[r63 - 1 + fr] = per;
+      figure = { row: r63, col: 0 }; // 0부터 센 행 번호(= 엑셀 64행)
+    } else {
+      set(at('A63'), e.detailMemo || '(도면 비교 화면에서 내보내면 이 자리에 비교 그림이 들어갑니다. 여기서 내보낸 파일에는 캡처를 직접 붙여 넣으세요.)'); rg('A63', 'P76');
+    }
     set(at('A77'), '10. 회의록 / 협의 내용'); rg('A77', 'P77');
     set(at('A78'), e.meetingMemo); rg('A78', 'P89');
     row(89 + o);
-    return { rows: R, merges: merges, widths: [5, 11, 18, 15, 9, 12, 9, 7, 15, 10, 13, 9, 11, 16, 10, 11] };
+    return { rows: R, merges: merges, widths: [5, 11, 18, 15, 9, 12, 9, 7, 15, 10, 13, 9, 11, 16, 10, 11], figure: figure, rowsHpx: rowsHpx };
   }
 
   // ── 도면 비교 (2026-09-29 추가 요청) ──────────────
   // 비트맵은 {w, h, 배열} 대신 배열과 w·h 를 따로 받습니다. 마스크 = Uint8Array(w*h), 1 = 선(잉크), 0 = 빈 곳.
 
-  // 이진화: RGBA 픽셀 → 마스크. 투명한 곳은 흰 바탕으로 보고, 밝기가 기준값보다 어두우면 선으로 봅니다.
+  // 이진화: RGBA 픽셀 → 마스크. 투명한 곳은 흰 바탕으로 봅니다.
+  // 세 채널 중 가장 어두운 값으로 판정합니다 — CAD PDF 의 파랑·하늘색·초록 선도 선으로 잡기 위해서입니다
+  // (밝기 평균으로 보면 하늘색(0,255,255) 선이 밝게 나와 빠집니다. 2026-09-29 실제 도면 확인).
   function binarize(rgba, w, h, threshold) {
     var thr = threshold == null ? 160 : threshold;
     var n = w * h, out = new Uint8Array(n);
     for (var i = 0; i < n; i++) {
       var p = i * 4, a = rgba[p + 3] / 255;
-      var lum = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
-      var v = lum * a + 255 * (1 - a);
+      var m = Math.min(rgba[p], rgba[p + 1], rgba[p + 2]);
+      var v = m * a + 255 * (1 - a);
       out[i] = v < thr ? 1 : 0;
     }
     return out;
@@ -1066,6 +1082,350 @@
     return rows;
   }
 
+
+  // ── 도면 비교 2차 (2026-09-29 오후 — 실제 CAD PDF 두 쌍으로 조정) ──────────
+
+  // 도곽(도면 테두리) 찾기: 가로·세로로 길게 이어진 선(폭의 frac 이상이 선인 행·열) 중 가장 바깥 것.
+  // 못 찾으면 선 전체의 외곽 사각형을 돌려줍니다. {x0, y0, x1, y1, kind: 'frame' | 'ink' }
+  function findFrame(mask, w, h, frac) {
+    frac = frac || 0.5;
+    var rows = new Int32Array(h), cols = new Int32Array(w), x, y, any = false;
+    for (y = 0; y < h; y++) {
+      var r = y * w;
+      for (x = 0; x < w; x++) if (mask[r + x]) { rows[y]++; cols[x]++; any = true; }
+    }
+    if (!any) return null;
+    function first(arr, n, lim) { for (var i = 0; i < n; i++) if (arr[i] >= lim) return i; return -1; }
+    function last(arr, n, lim) { for (var i = n - 1; i >= 0; i--) if (arr[i] >= lim) return i; return -1; }
+    var y0 = first(rows, h, w * frac), y1 = last(rows, h, w * frac), x0 = first(cols, w, h * frac), x1 = last(cols, w, h * frac);
+    if (y0 >= 0 && x0 >= 0 && y1 - y0 > h * 0.3 && x1 - x0 > w * 0.3) return { x0: x0, y0: y0, x1: x1, y1: y1, kind: 'frame' };
+    y0 = first(rows, h, 1); y1 = last(rows, h, 1); x0 = first(cols, w, 1); x1 = last(cols, w, 1);
+    return { x0: x0, y0: y0, x1: x1, y1: y1, kind: 'ink' };
+  }
+  // 두 도곽 사각형의 네 모서리로 B → A 유사변환을 구합니다
+  function frameTransform(fb, fa) {
+    if (!fa || !fb) return null;
+    function corners(f) { return [{ x: f.x0, y: f.y0 }, { x: f.x1, y: f.y0 }, { x: f.x1, y: f.y1 }, { x: f.x0, y: f.y1 }]; }
+    return fitSimilarity(corners(fb), corners(fa));
+  }
+  // 미세 이동 보정: A 의 선 점(최대 maxSamples 개를 고르게 뽑음)이 B 선과 겹치는 개수가 가장 많은 (dx, dy) 를 ±r 안에서 찾습니다.
+  // B 를 (dx, dy) 만큼 옮기면 A 와 가장 잘 겹친다는 뜻입니다. score = 겹친 비율(0~1).
+  function bestShift(mA, mB, w, h, r, maxSamples) {
+    r = r == null ? 6 : r; maxSamples = maxSamples || 40000;
+    var ink = 0, i;
+    for (i = 0; i < w * h; i++) ink += mA[i];
+    if (!ink) return { dx: 0, dy: 0, score: 0 };
+    var step = Math.max(1, Math.floor(ink / maxSamples)), pts = [], k = 0;
+    for (i = 0; i < w * h; i++) if (mA[i] && (k++ % step === 0)) pts.push(i);
+    var best = { dx: 0, dy: 0, score: -1 }, base = -1;
+    for (var dy = -r; dy <= r; dy++) {
+      for (var dx = -r; dx <= r; dx++) {
+        var hit = 0;
+        for (var j = 0; j < pts.length; j++) {
+          var p = pts[j], x = p % w, y = (p - x) / w, bx = x - dx, by = y - dy;
+          if (bx >= 0 && by >= 0 && bx < w && by < h && mB[by * w + bx]) hit++;
+        }
+        var sc = hit / pts.length;
+        if (dx === 0 && dy === 0) base = sc;
+        // 같은 점수면 덜 움직인 쪽을 고릅니다
+        if (sc > best.score + 1e-9 || (Math.abs(sc - best.score) <= 1e-9 && Math.abs(dx) + Math.abs(dy) < Math.abs(best.dx) + Math.abs(best.dy))) best = { dx: dx, dy: dy, score: sc };
+      }
+    }
+    best.base = base;
+    return best;
+  }
+  function composeShift(T, dx, dy) {
+    var o = { a: T.a, b: T.b, tx: T.tx + dx, ty: T.ty + dy };
+    o.scale = Math.sqrt(o.a * o.a + o.b * o.b); o.angle = Math.atan2(o.b, o.a) * 180 / Math.PI; o.rms = T.rms || 0;
+    return o;
+  }
+
+  // 차이 영역마다 「조금 옮겨진 것뿐인지」 확인합니다. 영역 안의 선 점(추가 = B 선, 삭제 = A 선)을 ±r 픽셀 옮겨 보아
+  // 상대 도면 선과 거의 다 겹치는 자리가 있으면 moved = {dx, dy} 를 붙입니다(내용은 같고 위치만 바뀐 표·블록).
+  // dA·dB 는 허용치만큼 팽창한 A·B 마스크. 옮겨도 설명이 안 되면(값이 바뀐 글자 등) moved 는 없습니다.
+  function markMoved(regions, mA, mB, dA, dB, w, h, r, opt) {
+    opt = opt || {};
+    var need = opt.need == null ? 0.97 : opt.need, maxPts = opt.maxPts || 600;
+    regions.forEach(function (g) {
+      var src = g.type === '추가' ? mB : mA, dst = g.type === '추가' ? dA : dB;
+      var pts = [], x, y;
+      for (y = g.y; y < g.y + g.h; y++) for (x = g.x; x < g.x + g.w; x++) if (src[y * w + x]) pts.push(y * w + x);
+      if (pts.length < (opt.minPts || 150)) return;   // 글자 한두 개 크기의 작은 차이는 우연히 겹치는 자리가 있어 판단하지 않습니다
+      if (pts.length > maxPts) { var st = pts.length / maxPts, q = []; for (var k = 0; k < maxPts; k++) q.push(pts[Math.floor(k * st)]); pts = q; }
+      function score(dx, dy) {
+        var hit = 0;
+        for (var j = 0; j < pts.length; j++) {
+          var p = pts[j], px = p % w, py = (p - px) / w, tx = px + dx, ty = py + dy;
+          if (tx >= 0 && ty >= 0 && tx < w && ty < h && dst[ty * w + tx]) hit++;
+        }
+        return hit / pts.length;
+      }
+      var s0 = score(0, 0), best = { dx: 0, dy: 0, s: s0 };
+      for (var dy = -r; dy <= r; dy++) for (var dx = -r; dx <= r; dx++) {
+        if (!dx && !dy) continue;
+        var sc = score(dx, dy);
+        if (sc > best.s) best = { dx: dx, dy: dy, s: sc };
+      }
+      if ((best.dx || best.dy) && best.s >= need && s0 < need - 0.1) g.moved = { dx: g.type === '추가' ? -best.dx : best.dx, dy: g.type === '추가' ? -best.dy : best.dy, match: best.s };
+    });
+    return regions;
+  }
+
+  // 블록별 정렬 — 표가 길어져 아래 그림이 통째로 밀린 것처럼 「부분마다 다르게 옮겨진」 개정 도면용.
+  // A 를 tile 픽셀 칸으로 나눠 칸마다 B 에서 가장 잘 겹치는 이동(dx, dy)을 찾습니다(B 위치 = A 위치 + d).
+  // 먼저 factor 배로 줄인 그림에서 ±R 을 넓게 찾고, 원래 크기에서 ±factor 로 다듬습니다.
+  // 돌려주는 값: {cols, rows, tile, dx[], dy[], score[], warped} — warped 는 칸마다 옮겨 A 배치로 맞춘 B 마스크.
+  function shrinkMask(m, w, h, f) {
+    var sw = Math.ceil(w / f), sh = Math.ceil(h / f), o = new Uint8Array(sw * sh);
+    for (var y = 0; y < h; y++) { var sy = (y / f) | 0; for (var x = 0; x < w; x++) if (m[y * w + x]) o[sy * sw + ((x / f) | 0)] = 1; }
+    return { m: o, w: sw, h: sh };
+  }
+  function samplePoints(m, w, x0, y0, x1, y1, maxN) {
+    var pts = [];
+    for (var y = y0; y < y1; y++) for (var x = x0; x < x1; x++) if (m[y * w + x]) pts.push(x, y);
+    var n = pts.length / 2;
+    if (n <= maxN) return pts;
+    var st = n / maxN, q = [];
+    for (var k = 0; k < maxN; k++) { var i = Math.floor(k * st) * 2; q.push(pts[i], pts[i + 1]); }
+    return q;
+  }
+  // pen: 멀리 옮길수록 점수를 조금 깎습니다(표처럼 줄이 반복되는 곳에서 한 줄 건너 겹치는 가짜 일치를 막기 위해)
+  function bestIn(pts, target, w, h, cx, cy, r, pen) {
+    pen = pen || 0;
+    var best = { dx: cx, dy: cy, s: -1, raw: 0 }, n = pts.length / 2;
+    for (var dy = cy - r; dy <= cy + r; dy++) for (var dx = cx - r; dx <= cx + r; dx++) {
+      var hit = 0;
+      for (var j = 0; j < pts.length; j += 2) {
+        var x = pts[j] + dx, y = pts[j + 1] + dy;
+        if (x >= 0 && y >= 0 && x < w && y < h && target[y * w + x]) hit++;
+      }
+      var raw = hit / n, sc = raw - pen * (Math.abs(dx) + Math.abs(dy));
+      if (sc > best.s + 1e-9 || (Math.abs(sc - best.s) <= 1e-9 && Math.abs(dx) + Math.abs(dy) < Math.abs(best.dx) + Math.abs(best.dy))) best = { dx: dx, dy: dy, s: sc, raw: raw };
+    }
+    return best;
+  }
+  function blockAlign(mA, mB, w, h, opt) {
+    opt = opt || {};
+    var f = opt.factor || 6, tile = opt.tile || 192, R = opt.R || 160, minPts = opt.minPts || 12;
+    var pen = opt.penalty == null ? 0.004 : opt.penalty, gain = opt.gain == null ? 0.15 : opt.gain;
+    var sa = shrinkMask(mA, w, h, f), sb = shrinkMask(mB, w, h, f);
+    var sbd = dilate(sb.m, sb.w, sb.h, 1); // 줄인 그림은 1칸 팽창해 넓게, 원래 크기는 팽창 없이 정확하게 맞춥니다
+    var cols = Math.ceil(w / tile), rows = Math.ceil(h / tile), n = cols * rows;
+    var dx = new Int32Array(n), dy = new Int32Array(n), score = new Float32Array(n), has = new Uint8Array(n);
+    var ts = Math.max(1, Math.round(tile / f)), rs = Math.max(1, Math.round(R / f));
+    for (var ty = 0; ty < rows; ty++) for (var tx = 0; tx < cols; tx++) {
+      var k = ty * cols + tx;
+      var pts = samplePoints(sa.m, sa.w, tx * ts, ty * ts, Math.min(sa.w, (tx + 1) * ts), Math.min(sa.h, (ty + 1) * ts), 300);
+      if (pts.length / 2 < minPts) continue;
+      var c = bestIn(pts, sbd, sa.w, sa.h, 0, 0, rs, pen);
+      var fp = samplePoints(mA, w, tx * tile, ty * tile, Math.min(w, (tx + 1) * tile), Math.min(h, (ty + 1) * tile), 700);
+      var fine = bestIn(fp, mB, w, h, c.dx * f, c.dy * f, f);
+      // 옮겨도 별로 나아지지 않으면(값이 바뀐 곳) 옮기지 않습니다
+      var stay = bestIn(fp, mB, w, h, 0, 0, 0);
+      if (fine.raw - stay.raw < gain) fine = stay;
+      dx[k] = fine.dx; dy[k] = fine.dy; score[k] = fine.raw; has[k] = 1;
+    }
+    // 선이 없는 칸은 이웃 칸 값을 이어받습니다(없으면 0)
+    for (var pass = 0; pass < 3; pass++) for (var q = 0; q < n; q++) {
+      if (has[q]) continue;
+      var qx = q % cols, qy = (q - qx) / cols, sx = 0, sy = 0, c2 = 0;
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d) {
+        var nx = qx + d[0], ny = qy + d[1];
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) return;
+        var j = ny * cols + nx; if (has[j] === 1) { sx += dx[j]; sy += dy[j]; c2++; }
+      });
+      if (c2) { dx[q] = Math.round(sx / c2); dy[q] = Math.round(sy / c2); has[q] = 2; }
+    }
+    var warped = new Uint8Array(w * h);
+    for (var y = 0; y < h; y++) {
+      var trow = ((y / tile) | 0) * cols;
+      for (var x = 0; x < w; x++) {
+        var t = trow + ((x / tile) | 0), bx = x + dx[t], by = y + dy[t];
+        if (bx >= 0 && by >= 0 && bx < w && by < h) warped[y * w + x] = mB[by * w + bx];
+      }
+    }
+    return { cols: cols, rows: rows, tile: tile, dx: dx, dy: dy, score: score, warped: warped };
+  }
+
+  // 비교 범위 제한: 사각형 roi({x0,y0,x1,y1}) 밖의 차이 점을 지웁니다(배치가 크게 바뀐 도면에서 관심 부분만 볼 때)
+  function clipDiff(diff, w, h, roi) {
+    if (!roi) return diff;
+    var x0 = Math.max(0, Math.floor(roi.x0)), y0 = Math.max(0, Math.floor(roi.y0)), x1 = Math.min(w - 1, Math.ceil(roi.x1)), y1 = Math.min(h - 1, Math.ceil(roi.y1));
+    var na = 0, nr = 0;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      var i = y * w + x;
+      if (x < x0 || x > x1 || y < y0 || y > y1) { diff.added[i] = 0; diff.removed[i] = 0; }
+      else { na += diff.added[i]; nr += diff.removed[i]; }
+    }
+    diff.addedCount = na; diff.removedCount = nr; diff.roi = { x0: x0, y0: y0, x1: x1, y1: y1 };
+    return diff;
+  }
+  // 점 목록을 둘러싼 사각형을 짧은 변의 frac 만큼 넓혀 돌려줍니다
+  function pointsBox(pts, frac) {
+    if (!pts || pts.length < 2) return null;
+    var xs = pts.map(function (p) { return p.x; }), ys = pts.map(function (p) { return p.y; });
+    var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    var m = Math.max(10, Math.min(x1 - x0, y1 - y0) * (frac == null ? 0.15 : frac));
+    return { x0: x0 - m, y0: y0 - m, x1: x1 + m, y1: y1 + m };
+  }
+
+  // 글자 비교: PDF 글자 정보(벡터 PDF 만 있음)를 위치로 맞대어 값이 바뀐 글자를 찾습니다.
+  // items = [{str, x, y, h}] — x·y 는 글자 가운데, h 는 글자 높이(모두 A 도면 픽셀 좌표로 맞춘 값).
+  // 같은 글자가 radius 안에 있으면 동일, 없고 가까운 곳에 다른 글자가 있으면 변경(예: 350 → 450),
+  // 아무것도 없으면 추가(B) / 삭제(A). 멀리 옮겨진 같은 글자는 이동으로 묶습니다.
+  function textDiff(itemsA, itemsB, opt) {
+    opt = opt || {};
+    var rk = opt.radius == null ? 1.2 : opt.radius;   // 글자 높이의 몇 배까지를 「같은 자리」로 볼지
+    var minR = opt.minRadius == null ? 6 : opt.minRadius;
+    function clean(list) { return (list || []).filter(function (t) { return String(t.str || '').trim() !== ''; }).map(function (t) { return { str: String(t.str).trim(), x: t.x, y: t.y, h: t.h || 10, w: t.w, ang: t.ang }; }); }
+    var A = clean(itemsA), B = clean(itemsB);
+    var usedA = new Uint8Array(A.length), usedB = new Uint8Array(B.length);
+    var same = 0;
+    function d2(p, q) { return (p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y); }
+    function rad(p, q) { var r = Math.max(minR, rk * Math.max(p.h, q.h)); return r * r; }
+    var i, j;
+    // 1) 같은 글자 · 같은 자리
+    for (j = 0; j < B.length; j++) {
+      var bi = -1, bd = Infinity;
+      for (i = 0; i < A.length; i++) {
+        if (usedA[i] || A[i].str !== B[j].str) continue;
+        var d = d2(A[i], B[j]);
+        if (d <= rad(A[i], B[j]) && d < bd) { bd = d; bi = i; }
+      }
+      if (bi >= 0) { usedA[bi] = 1; usedB[j] = 1; same++; }
+    }
+    var out = [];
+    // 2) 같은 자리의 다른 글자 → 변경
+    for (j = 0; j < B.length; j++) {
+      if (usedB[j]) continue;
+      var ci = -1, cd = Infinity;
+      for (i = 0; i < A.length; i++) {
+        if (usedA[i]) continue;
+        var dd = d2(A[i], B[j]);
+        if (dd <= rad(A[i], B[j]) && dd < cd) { cd = dd; ci = i; }
+      }
+      if (ci >= 0) { usedA[ci] = 1; usedB[j] = 1; out.push({ type: '변경', a: A[ci], b: B[j] }); }
+    }
+    // 3) 남은 것: 같은 글자가 먼 곳에 하나씩 남아 있으면 이동, 아니면 추가·삭제
+    var restA = [], restB = [];
+    for (i = 0; i < A.length; i++) if (!usedA[i]) restA.push(A[i]);
+    for (j = 0; j < B.length; j++) if (!usedB[j]) restB.push(B[j]);
+    var takenA = new Uint8Array(restA.length);
+    restB.forEach(function (b) {
+      var mi = -1, md = Infinity;
+      restA.forEach(function (a, k) { if (!takenA[k] && a.str === b.str) { var q = d2(a, b); if (q < md) { md = q; mi = k; } } });
+      if (mi >= 0) { takenA[mi] = 1; out.push({ type: '이동', a: restA[mi], b: b }); }
+      else out.push({ type: '추가', a: null, b: b });
+    });
+    restA.forEach(function (a, k) { if (!takenA[k]) out.push({ type: '삭제', a: a, b: null }); });
+    function pos(x) { var p = x.b || x.a; return p.y * 100000 + p.x; }
+    out.sort(function (p, q) { return pos(p) - pos(q); });
+    var counts = { 변경: 0, 추가: 0, 삭제: 0, 이동: 0 };
+    out.forEach(function (x, k) { x.no = k + 1; counts[x.type]++; });
+    return { list: out, counts: counts, same: same };
+  }
+
+  // BOM 시트(2차원 배열)에서 머리행을 찾아 표로 바꿉니다.
+  // 수강생 BOM 양식(ERP 「정전개 입력 조회」): 1행 「회사명 : … / 품번 / 품명」, 2행 머리행(품목코드·품목명·BOM버전·규격·단위·수량·생산공정·위치·적요),
+  // 마지막 행은 조회 일시. 머리행 위 제목에서 품번·품명을 읽어 둡니다(회사명은 버립니다).
+  function parseBomSheet(aoa) {
+    aoa = aoa || [];
+    var hi = -1;
+    for (var i = 0; i < Math.min(aoa.length, 15); i++) {
+      var r = aoa[i] || [];
+      if (r.some(function (c) { return KEY_HINTS.test(String(c == null ? '' : c)); }) && r.filter(function (c) { return !isBlank(c); }).length >= 2) { hi = i; break; }
+    }
+    if (hi < 0) hi = 0;
+    var headers = (aoa[hi] || []).map(function (c, k) { return isBlank(c) ? '열' + (k + 1) : String(c).trim(); });
+    var key = guessKeyColumn(headers), ki = headers.indexOf(key);
+    var rows = [];
+    for (var j = hi + 1; j < aoa.length; j++) {
+      var line = aoa[j] || [];
+      var kv = line[ki];
+      if (isBlank(kv)) continue;
+      var others = line.filter(function (c, k) { return k !== ki && !isBlank(c); }).length;
+      if (!others && /^\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}/.test(String(kv).trim())) continue; // 조회 일시 줄
+      var o = {};
+      headers.forEach(function (hd, k) { o[hd] = line[k] == null ? '' : line[k]; });
+      rows.push(o);
+    }
+    var title = '', partNo = '', partName = '';
+    for (var t = 0; t < hi; t++) {
+      var s = (aoa[t] || []).filter(function (c) { return !isBlank(c); }).join(' ');
+      if (!s) continue;
+      title = s;
+      var parts = s.split('/').map(function (x) { return x.trim(); });
+      var pn = parts.filter(function (x) { return /^[0-9A-Z][0-9A-Z-]{4,}$/i.test(x) && /\d/.test(x); })[0];
+      if (pn) { partNo = pn; var at = parts.indexOf(pn); partName = parts.slice(at + 1).join(' / '); }
+    }
+    return { headers: headers, key: key, rows: rows, partNo: partNo, partName: partName, headerRow: hi + 1, hasTitle: !!title };
+  }
+  // 비교할 열 기본값: BOM 에서 뜻이 있는 칸만(적요·위치·생산공정·BOM버전은 양식마다 메모성이라 뺍니다)
+  var BOM_COMPARE_HINT = ['수량', '단위', '규격', '품목명', '품명', 'QTY', 'UNIT', 'SPEC'];
+  function defaultCompareCols(headers, key) {
+    var c = headers.filter(function (hd) { return hd !== key && BOM_COMPARE_HINT.some(function (x) { return norm(hd) === norm(x); }); });
+    return c.length ? c : headers.filter(function (hd) { return hd !== key; });
+  }
+  // 편집 거리(작은 문자열용)
+  function editDistance(a, b) {
+    a = norm(a); b = norm(b);
+    var m = a.length, n = b.length, prev = [], cur = [], i, j;
+    for (j = 0; j <= n; j++) prev[j] = j;
+    for (i = 1; i <= m; i++) {
+      cur = [i];
+      for (j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+    return prev[n];
+  }
+  // 대체 후보: 삭제된 품번과 추가된 품번이 서로를 품거나(OPT-AB1234 → AB1234) 두 글자 안으로 다르면(1234567-2 → 1234657-2) 짝을 지어 줍니다.
+  function replacementCandidates(res) {
+    var del = res.rows.filter(function (r) { return r.status === '삭제'; });
+    var add = res.rows.filter(function (r) { return r.status === '추가'; });
+    var used = {}, out = [];
+    del.forEach(function (d) {
+      var ka = norm(d.key), best = null, bs = Infinity;
+      add.forEach(function (a) {
+        var kb = norm(a.key);
+        if (used[kb]) return;
+        var contain = ka.length >= 4 && kb.length >= 4 && (ka.indexOf(kb) >= 0 || kb.indexOf(ka) >= 0);
+        var ed = editDistance(ka, kb);
+        var sc = contain ? 0 : ed;
+        // 짧은 품번끼리는 두 글자만 달라도 전혀 다른 부품이라, 길이의 1/4 까지만 봅니다(최대 2글자)
+        var lim = Math.min(2, Math.floor(Math.min(ka.length, kb.length) / 4));
+        if ((contain || (lim > 0 && ed <= lim)) && sc < bs) { bs = sc; best = a; }
+      });
+      if (best) { used[norm(best.key)] = 1; out.push({ from: d, to: best, reason: bs === 0 ? '품번을 품음' : '품번 ' + bs + '글자 다름' }); }
+    });
+    return out;
+  }
+  // BOM 차이 → ECN 변경자재 행. 대체 후보는 「대체」, 수량만 바뀌면 「수량변경」, 그 밖의 칸이 바뀌면 「사양변경」.
+  function materialsFromDiff(res, cols) {
+    cols = cols || {};
+    var nameC = cols.name || '품목명', specC = cols.spec || '규격', qtyC = cols.qty || '수량', unitC = cols.unit || '단위';
+    function spec(r) { return [r[nameC], r[specC]].filter(function (x) { return !isBlank(x); }).join(' / '); }
+    var reps = replacementCandidates(res), inRep = {};
+    reps.forEach(function (p) { inRep[p.from.key] = 1; inRep[p.to.key] = 1; });
+    var out = [];
+    res.rows.forEach(function (r) {
+      if (r.status === '동일') return;
+      if (r.status === '변경') {
+        var onlyQty = r.changed.every(function (c) { return c === qtyC; });
+        out.push({ type: onlyQty ? '수량변경' : '사양변경', location: '', beforeNo: r.key, beforeSpec: spec(r.a), beforeQty: r.a[qtyC], unit: r.b[unitC] || r.a[unitC] || '',
+          afterNo: r.key, afterSpec: spec(r.b), afterQty: r.b[qtyC], stock: '', dept: '', currentStock: '' });
+      } else if (r.status === '삭제' && !inRep[r.key]) {
+        out.push({ type: '삭제', location: '', beforeNo: r.key, beforeSpec: spec(r.a), beforeQty: r.a[qtyC], unit: r.a[unitC] || '', afterNo: '', afterSpec: '', afterQty: '', stock: '', dept: '', currentStock: '' });
+      } else if (r.status === '추가' && !inRep[r.key]) {
+        out.push({ type: '신규', location: '', beforeNo: '', beforeSpec: '', beforeQty: '', unit: r.b[unitC] || '', afterNo: r.key, afterSpec: spec(r.b), afterQty: r.b[qtyC], stock: '', dept: '', currentStock: '' });
+      }
+    });
+    reps.forEach(function (p) {
+      out.push({ type: '대체', location: '', beforeNo: p.from.key, beforeSpec: spec(p.from.a), beforeQty: p.from.a[qtyC], unit: p.to.b[unitC] || p.from.a[unitC] || '',
+        afterNo: p.to.key, afterSpec: spec(p.to.b), afterQty: p.to.b[qtyC], stock: '', dept: '', currentStock: '' });
+    });
+    return out;
+  }
+
   // ── 백업(JSON) ───────────────────────────────────────────
   function normalizeDb(p) {
     var db = emptyDb();
@@ -1101,7 +1461,10 @@
     binarize: binarize, dilate: dilate, diffMasks: diffMasks, components: components, diffRegions: diffRegions,
     fitSimilarity: fitSimilarity, applySimilarity: applySimilarity,
     guessKeyColumn: guessKeyColumn, parsePastedTable: parsePastedTable, tableDiff: tableDiff,
-    drawingPartRows: drawingPartRows, partRowKey: partRowKey, sheetTableDiff: sheetTableDiff
+    drawingPartRows: drawingPartRows, partRowKey: partRowKey, sheetTableDiff: sheetTableDiff,
+    findFrame: findFrame, frameTransform: frameTransform, bestShift: bestShift, composeShift: composeShift, textDiff: textDiff, markMoved: markMoved, blockAlign: blockAlign, clipDiff: clipDiff, pointsBox: pointsBox,
+    parseBomSheet: parseBomSheet, defaultCompareCols: defaultCompareCols, editDistance: editDistance,
+    replacementCandidates: replacementCandidates, materialsFromDiff: materialsFromDiff, filledMaterials: filledMaterials
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HNLogic = api;

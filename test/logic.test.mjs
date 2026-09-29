@@ -312,4 +312,123 @@ test('등록 도면 부품 표 비교: 커넥터 추가·REV 변경', () => {
   assert.deepEqual(pick('삭제'), []);
 });
 
+console.log('도면 비교 2차 (2026-09-29 오후 — 실제 CAD PDF·BOM 기준)');
+// 빈 w×h 마스크에 사각형 테두리·채운 사각형을 그리는 도우미
+function blank(w, h) { return { w, h, m: new Uint8Array(w * h) }; }
+function rect(b, x0, y0, x1, y1, fill) { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (fill || y === y0 || y === y1 || x === x0 || x === x1) b.m[y * b.w + x] = 1; }
+test('이진화: 하늘색(0,255,255) 선도 선으로 봄 — 밝기 평균이 아니라 가장 어두운 채널', () => {
+  const rgba = new Uint8ClampedArray([0, 255, 255, 255, 255, 255, 200, 255]); // 하늘색 · 연노랑
+  assert.deepEqual([...L.binarize(rgba, 2, 1, 160)], [1, 0]); // 밝기 평균이면 하늘색은 179 라 빠짐
+});
+test('도곽 찾기: 가장 바깥 긴 선 사각형, 없으면 선 외곽', () => {
+  const b = blank(40, 30); rect(b, 2, 3, 37, 27); rect(b, 10, 10, 14, 14, true);
+  assert.deepEqual(L.findFrame(b.m, 40, 30), { x0: 2, y0: 3, x1: 37, y1: 27, kind: 'frame' });
+  const c = blank(40, 30); rect(c, 10, 10, 14, 16, true);
+  assert.equal(L.findFrame(c.m, 40, 30).kind, 'ink');
+  // B 도곽이 A 보다 2배 크고 (4, 6) 밀려 있으면 배율 0.5 로 되돌림
+  const T = L.frameTransform({ x0: 8, y0: 12, x1: 78, y1: 60 }, { x0: 2, y0: 3, x1: 37, y1: 27 });
+  assert.ok(Math.abs(T.scale - 0.5) < 1e-9 && Math.abs(T.angle) < 1e-9);
+  const p = L.applySimilarity(T, { x: 8, y: 12 }); assert.ok(Math.abs(p.x - 2) < 1e-9 && Math.abs(p.y - 3) < 1e-9);
+});
+test('미세 이동 보정: B 가 (3, -2) 밀려 있으면 B 를 (-3, 2) 옮기라고 답함', () => {
+  const A = blank(40, 30); rect(A, 5, 5, 30, 20); rect(A, 12, 8, 16, 12, true);
+  const B = blank(40, 30); rect(B, 8, 3, 33, 18); rect(B, 15, 6, 19, 10, true);
+  const r = L.bestShift(A.m, B.m, 40, 30, 5);
+  assert.deepEqual([r.dx, r.dy, r.score], [-3, 2, 1]);
+  assert.ok(r.base < 0.2);
+});
+test('위치만 이동한 영역 표시: 표가 (4, 3) 밀리면 moved, 값이 바뀐 곳은 아님', () => {
+  const W = 60, H = 40;
+  const A = blank(W, H); rect(A, 5, 5, 25, 25); for (let y = 9; y <= 21; y += 4) for (let x = 6; x <= 24; x++) A.m[y * W + x] = 1; rect(A, 40, 10, 50, 14, true);
+  const B = blank(W, H); rect(B, 9, 8, 29, 28); for (let y = 12; y <= 24; y += 4) for (let x = 10; x <= 28; x++) B.m[y * W + x] = 1; rect(B, 40, 20, 50, 24, true);
+  const d = L.diffMasks(A.m, B.m, W, H, 0);
+  const rg = L.diffRegions(d, W, H, { minArea: 1, gap: 2 });
+  L.markMoved(rg, A.m, B.m, L.dilate(A.m, W, H, 0), L.dilate(B.m, W, H, 0), W, H, 6, { minPts: 20 });
+  const mv = rg.filter(g => g.moved);
+  assert.ok(mv.length >= 1);
+  mv.forEach(g => assert.deepEqual([g.moved.dx, g.moved.dy], [4, 3]));
+  assert.ok(rg.some(g => !g.moved && g.x >= 40)); // 오른쪽 덩어리(10칸 아래로 이동 — 범위 6 밖)는 이동으로 설명 안 됨
+});
+test('블록별 정렬: 아래쪽 그림만 12 밀린 개정 도면 → 칸마다 따로 맞춰 차이가 사라짐', () => {
+  const W = 120, H = 120;
+  const A = blank(W, H); rect(A, 10, 10, 50, 40); rect(A, 20, 20, 30, 30, true); rect(A, 10, 70, 50, 100); rect(A, 60, 75, 70, 85, true);
+  const B = blank(W, H); rect(B, 10, 10, 50, 40); rect(B, 20, 20, 30, 30, true); rect(B, 10, 82, 50, 112); rect(B, 60, 87, 70, 97, true);
+  const d0 = L.diffMasks(A.m, B.m, W, H, 0);
+  const ba = L.blockAlign(A.m, B.m, W, H, { tile: 60, R: 20, factor: 2, minPts: 4, penalty: 0.001, gain: 0.1 });
+  const d1 = L.diffMasks(A.m, ba.warped, W, H, 0);
+  assert.ok(d0.addedCount > 100);
+  assert.equal(d1.addedCount + d1.removedCount, 0);
+  assert.equal(ba.dy[0], 0); assert.equal(ba.dy[ba.cols], 12); // 위 칸은 그대로, 아래 칸은 12
+});
+test('글자 비교: 같은 자리 값 변경(350→450)·추가·삭제·이동', () => {
+  const A = [{ str: '350', x: 100, y: 100, h: 10 }, { str: 'CN-01', x: 200, y: 50, h: 10 }, { str: '800', x: 300, y: 300, h: 10 }, { str: 'FUSE', x: 50, y: 400, h: 10 }, { str: '1', x: 10, y: 10, h: 8 }];
+  const B = [{ str: '450', x: 102, y: 101, h: 10 }, { str: 'CN-01', x: 203, y: 52, h: 10 }, { str: '200', x: 500, y: 300, h: 10 }, { str: 'FUSE', x: 450, y: 380, h: 10 }, { str: '1', x: 12, y: 9, h: 8 }];
+  const r = L.textDiff(A, B);
+  const pick = t => r.list.filter(x => x.type === t).map(x => (x.a ? x.a.str : '') + '>' + (x.b ? x.b.str : ''));
+  assert.deepEqual(pick('변경'), ['350>450']);
+  assert.deepEqual(pick('추가'), ['>200']);
+  assert.deepEqual(pick('삭제'), ['800>']);
+  assert.deepEqual(pick('이동'), ['FUSE>FUSE']);
+  assert.equal(r.same, 2);
+});
+test('BOM 양식 읽기: 제목줄(회사명 / 품번 / 품명)·머리행 2행·끝의 조회 일시 줄', () => {
+  const aoa = [['회사명 : 가상회사 / 900000-00001 / HARNESS ASSY;TEST'], ['품목코드', '품목명', 'BOM버전', '규격', '단위', '수량', '생산공정', '위치', '적요'],
+    ['CN-01', 'CONN', '', '2P', 'EA', 2, '', '', ''], ['WR-01', 'WIRE', '', '0.5SQ', 'M', 1.25, '', '', '메모'], ['', '', '', '', '', '', '', '', ''], ['2026/09/29  오전 11:08:58']];
+  const p = L.parseBomSheet(aoa);
+  assert.equal(p.key, '품목코드'); assert.equal(p.headerRow, 2); assert.equal(p.rows.length, 2);
+  assert.equal(p.partNo, '900000-00001'); assert.equal(p.partName, 'HARNESS ASSY;TEST');
+  assert.deepEqual(L.defaultCompareCols(p.headers, p.key), ['품목명', '규격', '단위', '수량']); // 적요·위치·생산공정·BOM버전은 뺌
+});
+test('대체 후보·ECN 변경자재 만들기', () => {
+  const A = [{ 품목코드: 'OPT-ZC01', 품목명: 'CAP', 단위: 'EA', 수량: 6 }, { 품목코드: '9100123-2', 품목명: 'SHELL', 단위: '', 수량: 3 }, { 품목코드: 'W1', 품목명: 'WIRE', 단위: 'M', 수량: 1.2 }, { 품목코드: 'X9', 품목명: 'OLD', 단위: 'EA', 수량: 1 }];
+  const B = [{ 품목코드: 'ZC01', 품목명: 'CAP', 단위: 'EA', 수량: 6 }, { 품목코드: '9100213-2', 품목명: 'SHELL', 단위: '', 수량: 3 }, { 품목코드: 'W1', 품목명: 'WIRE', 단위: 'M', 수량: 2.6 }, { 품목코드: 'N1', 품목명: 'NEW', 단위: 'EA', 수량: 4 }];
+  const res = L.tableDiff(A, B, { key: '품목코드', cols: ['품목명', '단위', '수량'] });
+  const reps = L.replacementCandidates(res).map(p => p.from.key + '>' + p.to.key);
+  assert.deepEqual(reps.sort(), ['9100123-2>9100213-2', 'OPT-ZC01>ZC01']);
+  const mats = L.materialsFromDiff(res, {});
+  assert.deepEqual(mats.map(m => m.type + ':' + (m.beforeNo || '') + '>' + (m.afterNo || '')).sort(),
+    ['대체:9100123-2>9100213-2', '대체:OPT-ZC01>ZC01', '삭제:X9>', '수량변경:W1>W1', '신규:>N1'].sort());
+  const q = mats.find(m => m.type === '수량변경');
+  assert.deepEqual([q.beforeQty, q.afterQty, L.materialDelta(q)], [1.2, 2.6, 1.4]);
+  assert.equal(L.editDistance('9100123-2', '9100213-2'), 2);
+});
+test('설계변경통보서 9절 그림 자리: figure 옵션이면 64행부터 비우고 행 높이를 늘림', () => {
+  const e = L.emptyEcn(); e.ecnNo = 'T-1';
+  const r0 = L.ecnReport(e, TODAY);
+  const r1 = L.ecnReport(e, TODAY, { figure: { heightPx: 520, caption: '비교 그림' } });
+  assert.equal(r0.figure, null);
+  assert.equal(r1.figure.row, 63);                    // 0부터 센 행 = 엑셀 64행
+  assert.ok(String(r1.rows[62][0]).includes('비교 그림'));
+  assert.equal(r1.rowsHpx[63], 40);                   // 520 / 13줄
+  assert.ok(r1.merges.includes('A63:P63') && !r1.merges.includes('A63:P76'));
+});
+test('엑셀에 그림 넣기: 시트에 drawing 연결·그림 파일·형식 등록', () => {
+  const XLSX = require('../vendor/xlsx.full.min.js');
+  const XI = require('../js/xlsx-image.js');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['a']]), 'S1');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['b']]), 'S2');
+  const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+  const out = XI.addImages(XLSX, new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' })), [{ sheet: 2, png, col: 0, row: 3, width: 100, height: 50, name: '그림' }]);
+  const z = XLSX.CFB.read(out, { type: 'array' });
+  const txt = p => Buffer.from(XLSX.CFB.find(z, p).content).toString('utf8');
+  assert.ok(txt('/xl/worksheets/sheet2.xml').includes('<drawing r:id="rIdImg1"/>'));
+  assert.ok(!txt('/xl/worksheets/sheet1.xml').includes('<drawing'));
+  assert.ok(txt('/xl/worksheets/_rels/sheet2.xml.rels').includes('../drawings/drawing1.xml'));
+  assert.ok(txt('/xl/drawings/drawing1.xml').includes('<xdr:row>3</xdr:row>') && txt('/xl/drawings/drawing1.xml').includes('cx="952500"'));
+  assert.ok(txt('/[Content_Types].xml').includes('Extension="png"') && txt('/[Content_Types].xml').includes('/xl/drawings/drawing1.xml'));
+  assert.equal(XLSX.CFB.find(z, '/xl/media/image1.png').content.length, png.length);
+  assert.deepEqual(XLSX.read(out, { type: 'array' }).SheetNames, ['S1', 'S2']); // 다시 읽힘
+});
+
+test('비교 범위 제한: 기준점 둘레 밖의 차이는 지움', () => {
+  const W = 20, H = 10, a = new Uint8Array(W * H), b = new Uint8Array(W * H);
+  b[2 * W + 2] = 1; b[5 * W + 15] = 1;
+  const d = L.diffMasks(a, b, W, H, 0);
+  const box = L.pointsBox([{ x: 12, y: 3 }, { x: 18, y: 8 }], 0);
+  assert.deepEqual(box, { x0: 2, y0: -7, x1: 28, y1: 18 }); // 여백은 최소 10
+  L.clipDiff(d, W, H, { x0: 10, y0: 0, x1: 19, y1: 9 });
+  assert.equal(d.addedCount, 1); assert.equal(d.added[5 * W + 15], 1); assert.equal(d.added[2 * W + 2], 0);
+});
+
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));

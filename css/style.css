@@ -247,3 +247,7 @@ tr.clickable:hover td, tr.sel td { background: var(--info-bg); }
 .diff-tbl td.cell-chg .old { color: var(--muted); text-decoration: line-through; }
 .diff-tbl tr.row-chg td:first-child { color: var(--danger); font-weight: 700; }
 @media (max-width: 720px) { .cmp-two { grid-template-columns: minmax(0, 1fr); } }
+.chk-row { display: flex; flex-wrap: wrap; gap: 4px 14px; font-weight: 400; }
+.chk-row label { display: inline-flex; gap: 6px; align-items: center; }
+details > summary { cursor: pointer; margin: 6px 0; }
+.sw-mv { background: rgb(126, 34, 206); }

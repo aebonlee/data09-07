@@ -171,7 +171,7 @@
     // 8 종결 + 9·10
     h += '<section class="card ecn-sec"><h2>8. ECN 종결 확인 (자동 판정)</h2><div id="closureBox">' + closureBox(c) + '</div>' +
       '<div class="form-grid" style="margin-top:10px">' + ta('remarks', '기타 / 특이 사항', true) + '</div></section>' +
-      '<section class="card ecn-sec"><h2>9. 설계 변경 상세 · 10. 회의록</h2><p class="small muted">1단계 도구는 도면 캡처·사진을 저장하지 않습니다. 설명은 글로 남기고, 캡처는 내려받은 엑셀 9절에 붙여 넣으세요.</p><div class="two-col">' +
+      '<section class="card ecn-sec"><h2>9. 설계 변경 상세 · 10. 회의록</h2><p class="small muted">도면 그림은 저장하지 않습니다. 「도면 비교」에서 A·B 를 비교한 뒤 통보서를 내보내면 9절에 비교 그림이 들어갑니다(<a href="#/compare">도면 비교 열기</a>). 설명은 아래에 글로 남겨 주세요.</p><div class="two-col">' +
       ta('detailMemo', '9. 설계 변경 상세 (변경 전 / 변경 후 설명)') + ta('meetingMemo', '10. 회의록 / 협의 내용') + '</div></section></div>';
     main.innerHTML = h;
     wire(main, e, isNew);
@@ -278,6 +278,8 @@
       db.ecns = db.ecns.filter(function (x) { return x !== e; }); App.save(); App.go('#/ecn');
     });
     $('#expReport', main).addEventListener('click', function () {
+      // 도면 비교 화면에서 비교한 결과가 이 창에 있으면 9절에 그림을 넣어 내보냅니다(view-compare.js)
+      if (App.exportEcnXlsx) { App.exportEcnXlsx(e); return; }
       var r = L.ecnReport(e, today);
       App.downloadXlsx('설계변경통보서_' + (e.ecnNo || e.id).replace(/[\\/:*?"<>|]/g, '_'), [
         { name: '설계변경통보서', rows: r.rows, merges: r.merges, widths: r.widths },
