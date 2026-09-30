@@ -319,6 +319,13 @@ alter table public.app_settings add constraint app_settings_ga_sq_object check (
 alter table public.drawing add column if not exists cav_tables jsonb not null default '[]'::jsonb;              -- ← drawings[].cavTables
 alter table public.drawing drop constraint if exists drawing_cav_tables_array;
 alter table public.drawing add constraint drawing_cav_tables_array check (jsonb_typeof(cav_tables) = 'array');
+-- 2026-09-30 오후: 비슷한 품번 선택창에서 고른 값(도면 품번 → 자재 DB 품번, '' = 고르지 않음)과 짝 하우징 선택(하우징 → 짝 하우징)
+alter table public.drawing add column if not exists bom_picks jsonb not null default '{}'::jsonb;               -- ← drawings[].bomPicks
+alter table public.drawing add column if not exists bom_match jsonb not null default '{}'::jsonb;               -- ← drawings[].bomMatch
+alter table public.drawing drop constraint if exists drawing_bom_picks_object;
+alter table public.drawing add constraint drawing_bom_picks_object check (jsonb_typeof(bom_picks) = 'object');
+alter table public.drawing drop constraint if exists drawing_bom_match_object;
+alter table public.drawing add constraint drawing_bom_match_object check (jsonb_typeof(bom_match) = 'object');
 
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거 (search_path 고정)

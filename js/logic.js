@@ -2145,6 +2145,9 @@
       }
       add('LOCK', d.lock_sn, '하우징당');
       add('LOCK 추가', d.lock_add_sn, '하우징당');
+      // 캡 · 옵션 품번은 BOM 에 넣습니다(2026-09-30 오후 수강생 답 ③). 짝 하우징은 참고로 보여 주고 사용자가 고를 때만 넣음
+      itemList(d.cap_sn).forEach(function (c) { add('캡', c, '하우징당'); });
+      itemList(d.opt_sn).forEach(function (c) { add('옵션', c, '하우징당'); });
       (C[d.name] || []).forEach(function (c) { add('커버', c.cover_item, '하우징당'); });
       (E[d.name] || []).forEach(function (e) { add('부가 자재', e.etc_add_item, '하우징당', { qty: toNum(e.qty) || 1, note: e.remark || '', optional: e.required === '0' }); });
       var bl = (B[d.name] || []).slice().sort(function (a, b) { return N(a.idx) - N(b.idx); });
@@ -2178,6 +2181,64 @@
     return { rows: rows, info: info, gaSq: gaSq, company: company, stats: st, error: st.housings ? '' : '고른 회사(' + company + ')의 하우징이 없습니다.' };
   }
 
+  // 한 칸에 품번이 여럿 적힌 경우(쉼표 · 세미콜론 · 줄바꿈)를 나눕니다. 대소문자는 그대로 둡니다
+  function itemList(v) { return String(v == null ? '' : v).split(/[,;\n]+/).map(function (x) { return x.trim(); }).filter(Boolean); }
+  // 예전에 불러온 마스터(캡 · 옵션 행이 없던 때)도 하우징 정보(info.cap · opt)로 캡 · 옵션 행을 채웁니다
+  function capOptRows(hs, inf, kids) {
+    var out = [];
+    if (!inf) return out;
+    [['캡', inf.cap], ['옵션', inf.opt]].forEach(function (x) {
+      if (kids.some(function (r) { return r.kind === x[0]; })) return;
+      itemList(x[1]).forEach(function (c) { out.push({ housing: hs, item: c, name: '', kind: x[0], qty: 1, unit: 'EA', basis: '하우징당', csaText: '', csaMin: null, csaMax: null, pins: null, note: '', pinRange: '', slot: '', optional: false }); });
+    });
+    return out;
+  }
+  // 짝 하우징 후보(참고용) — 사용자가 하나를 고르면 BOM 에 넣습니다(2026-09-30 오후 답 ③)
+  function matingOptions(housing, info) {
+    var inf = (info || {})[norm(housing)];
+    return inf ? itemList(inf.match) : [];
+  }
+  // 도면 품번과 「비슷한」 자재 DB 품번 — 뒤에 꼬리(-5 · _A · 공백 뒤 글자)만 더 붙은 것, 또는 도면 쪽에 꼬리가 더 붙은 것.
+  // 같은 하우징으로 자동 처리하지 않습니다(2026-09-30 오후 답 ①: 서로 다른 품번으로 보고 선택창에서 사용자가 고름).
+  function nearHousings(h, keys) {
+    h = norm(h);
+    if (!h) return [];
+    return (keys || []).filter(function (k) {
+      if (k === h) return false;
+      return (k.indexOf(h) === 0 && /^[-_ ]/.test(k.slice(h.length))) || (h.indexOf(k) === 0 && /^[-_ ]/.test(h.slice(k.length)));
+    }).sort(function (a, b) { return a.length - b.length || (a < b ? -1 : 1); }).slice(0, 8);
+  }
+  // CAV 표가 있는 쪽 번호들(여러 장 도면의 쪽 고르기용)
+  function cavPages(tables) {
+    return uniq((tables || []).map(function (t) { return t.page || 1; })).sort(function (a, b) { return a - b; });
+  }
+  // 쪽 고르기: page 가 숫자면 그 쪽 표만, 'all' · 빈 값이면 모든 쪽(2026-09-30 오후 답 ⑤ 「전체 페이지」)
+  function tablesOnPage(tables, page) {
+    if (page == null || page === '' || page === 'all') return tables || [];
+    return (tables || []).filter(function (t) { return (t.page || 1) === +page; });
+  }
+  // 도면 비교에서 A · B 의 쪽 고르기 → 비교할 쪽 쌍 [[A쪽, B쪽], …] (없는 쪽은 null)
+  //  둘 다 전체 = 같은 쪽 번호끼리(쪽 수가 다르면 남는 쪽은 상대가 null), 한쪽만 전체 = 고른 한 쪽을 상대의 모든 쪽과
+  function pagePairs(nA, selA, nB, selB) {
+    nA = Math.max(1, toNum(nA) || 1); nB = Math.max(1, toNum(nB) || 1);
+    var allA = selA === 'all', allB = selB === 'all', pA = Math.min(nA, Math.max(1, toNum(selA) || 1)), pB = Math.min(nB, Math.max(1, toNum(selB) || 1)), out = [], i;
+    if (allA && allB) for (i = 1; i <= Math.max(nA, nB); i++) out.push([i <= nA ? i : null, i <= nB ? i : null]);
+    else if (allA) for (i = 1; i <= nA; i++) out.push([i, pB]);
+    else if (allB) for (i = 1; i <= nB; i++) out.push([pA, i]);
+    else out.push([pA, pB]);
+    return out;
+  }
+  // 전체 페이지 비교 요약(엑셀) — sums = [{pa, pb, add, del, moved, text:{변경,추가,삭제,이동}|null, align, note}]
+  function sheetPageSummary(sums, partA, partB) {
+    var rows = [['A품번', partA || '', 'B품번', partB || ''], ['A 쪽', 'B 쪽', '적색(B에만)', '파랑(A에만)', '이동(보라)', '글자 변경', '글자 추가', '글자 삭제', '판정', '정렬 · 비고']];
+    (sums || []).forEach(function (x) {
+      var t = x.text, n = x.pa == null || x.pb == null ? null : x.add + x.del + (t ? t.변경 + t.추가 + t.삭제 : 0);
+      rows.push([x.pa == null ? '(없음)' : x.pa, x.pb == null ? '(없음)' : x.pb, x.pa == null || x.pb == null ? '' : x.add, x.pa == null || x.pb == null ? '' : x.del, x.pa == null || x.pb == null ? '' : x.moved,
+        t ? t.변경 : '', t ? t.추가 : '', t ? t.삭제 : '', n == null ? (x.pa == null ? 'A 에 없는 쪽' : 'B 에 없는 쪽') : n ? '차이 있음' : '차이 없음', x.note || x.align || '']);
+    });
+    return rows;
+  }
+
   function escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
   function masterKeys(master, info) {
     return uniq((master || []).map(function (r) { return r.housing; }).concat(Object.keys(info || {})));
@@ -2195,22 +2256,31 @@
     return out;
   }
   // 도면의 CAV 표 → 하우징별 실제 커넥터(표 하나 = 커넥터 하나). 마스터에 없는 하우징은 missing 으로(비슷한 품번 함께).
-  function housingsFromCavTables(tables, master, info) {
-    var keys = masterKeys(master, info), has = {}, out = [], miss = [];
+  //  opt.picks = { 도면 품번: 고른 자재 DB 품번 | '' (고르지 않음) } — 비슷한 품번 선택창에서 사용자가 고른 값(2026-09-30 오후 답 ①)
+  //  opt.page  = 쪽 번호 | 'all'(전체 페이지, 기본)
+  // missing: [{name, housing, near, page, skipped}] — near 가 있고 아직 고르지 않은 것은 선택창에 나옵니다(needPick)
+  function housingsFromCavTables(tables, master, info, opt) {
+    opt = opt || {};
+    var keys = masterKeys(master, info), has = {}, out = [], miss = [], picks = opt.picks || {};
     keys.forEach(function (k) { has[k] = 1; });
-    (tables || []).forEach(function (t) {
+    tablesOnPage(tables, opt.page).forEach(function (t) {
       if (t.kind !== 'cav') return;
-      var h = norm(t.housing);
+      var h = norm(t.housing), use = h, drawn = '';
       if (!h || !has[h]) {
-        miss.push({ name: t.name || '', housing: h, near: h ? keys.filter(function (k) { return k.indexOf(h) === 0 && /^[-_ ]/.test(k.slice(h.length)); }).slice(0, 5) : [] });
-        return;
+        var pk = h && Object.prototype.hasOwnProperty.call(picks, h) ? norm(picks[h]) : null;
+        if (pk && has[pk]) { use = pk; drawn = h; }
+        else {
+          miss.push({ name: t.name || '', housing: h, near: nearHousings(h, keys), page: t.page || 1, skipped: pk === '' });
+          return;
+        }
       }
-      var f = out.filter(function (x) { return x.housing === h; })[0];
-      if (!f) { f = { housing: h, count: 0, from: 'CAV 표', instances: [] }; out.push(f); }
+      var f = out.filter(function (x) { return x.housing === use; })[0];
+      if (!f) { f = { housing: use, count: 0, from: 'CAV 표', instances: [] }; out.push(f); }
+      if (drawn && (!f.drawn || f.drawn.indexOf(drawn) < 0)) f.drawn = (f.drawn || []).concat([drawn]);
       f.count++;
-      f.instances.push({ name: t.name || '', gaugeHead: t.gaugeHead || '', cavs: t.rows.map(function (r) { return { cav: r.cav, wire: r.wire, gauge: r.gauge, used: !!(r.wire || r.gauge) }; }) });
+      f.instances.push({ name: t.name || '', page: t.page || 1, drawn: drawn, gaugeHead: t.gaugeHead || '', cavs: t.rows.map(function (r) { return { cav: r.cav, wire: r.wire, gauge: r.gauge, used: !!(r.wire || r.gauge) }; }) });
     });
-    return { found: out, missing: miss };
+    return { found: out, missing: miss, needPick: miss.filter(function (x) { return x.near.length && !x.skipped; }) };
   }
   // 직접 넣는 「사용 핀:굵기」 — '1:0.5, 2:18GA, 4~6:1.25, 3' (굵기 없는 핀은 굵기 모름)
   function parseCavSpec(text) {
@@ -2250,6 +2320,7 @@
     var info = opt.info || {}, gaSq = opt.gaSq, rows = [];
     (found || []).forEach(function (f) {
       var hs = norm(f.housing), kids = master.filter(function (r) { return r.housing === hs; }), inf = info[hs];
+      kids = kids.concat(capOptRows(hs, inf, kids));
       var pinsN = housingPins(hs, master, info), insts = [], total = 0;
       function circ(list, head) {
         return list.map(function (c) { var v = gaugeValue(c.gauge, head, gaSq); return { cav: String(c.cav == null ? '' : c.cav).trim(), sq: v ? v.sq : null, text: c.gauge || '', used: c.used !== false }; });
@@ -2272,7 +2343,9 @@
       var nUsed = 0;
       insts.forEach(function (x) { nUsed += x.cavs.filter(function (c) { return c.used; }).length * x.mult; });
       rows.push({ 출처: f.from || '도면', 하우징: hs, 품목코드: hs, 품목명: '', 구분: '하우징', 수량: total, 단위: 'EA',
-        근거: (f.from === '직접 입력' ? '직접 입력 ' : f.from === 'CAV 표' ? 'CAV 표 ' : '도면에서 ') + total + '곳 · 쓰는 회로 ' + nUsed + (pinsN ? ' / 핀 ' + pinsN * total : ''), 확인: hsChk });
+        근거: (f.from === '직접 입력' ? '직접 입력 ' : f.from === 'CAV 표' ? 'CAV 표 ' : '도면에서 ') + total + '곳 · 쓰는 회로 ' + nUsed + (pinsN ? ' / 핀 ' + pinsN * total : '') +
+          (f.drawn && f.drawn.length ? ' · 도면 품번 ' + f.drawn.join(', ') + ' → 선택창에서 고름' : ''),
+        확인: [hsChk, f.drawn && f.drawn.length ? '도면 품번(' + f.drawn.join(', ') + ')과 다른 품번 — 사용자가 고름' : ''].filter(Boolean).join(' / ') });
       // 행 모으기 — 같은 자재는 한 줄로(수량·근거 누적)
       var acc = {}, order = [];
       function put(key, base, q, circ0, chk) {
@@ -2338,10 +2411,15 @@
           });
         });
       });
+      // 짝 하우징 — 참고로 보여 준 후보 중 사용자가 고른 것만(하우징 개수만큼)
+      var mp = f.matchPick ? norm(f.matchPick) : '';
+      if (mp) put('짝|' + mp, { item: mp, name: '', kind: '짝 하우징', unit: 'EA', qty: 1, basis: '하우징당', note: '' }, total, null,
+        matingOptions(hs, info).indexOf(mp) < 0 ? '자재 DB 의 짝 하우징 후보가 아님 — 확인' : '');
       order.sort(function (a, b) { return (typeof a === 'number' ? a : 1e9) - (typeof b === 'number' ? b : 1e9); });
       order.forEach(function (k) {
         var a = acc[k], r = a.base, why;
-        if (r.basis === '회로당' || typeof k === 'string') {
+        if (r.kind === '짝 하우징') why = '짝 하우징 — 참고 후보에서 사용자가 고름 · 1 × ' + total + '곳';
+        else if (r.basis === '회로당' || typeof k === 'string') {
           var sq = Object.keys(a.sqs).sort(function (x, y) { return +x - +y; }).map(function (s) { return s + '×' + a.sqs[s]; });
           why = r.qty + ' × 쓰는 회로 ' + a.n + (sq.length ? ' (SQ ' + sq.join(', ') + ')' : '') + (r.pinRange ? ' · 핀 ' + r.pinRange : '');
         } else if (r.basis === '빈 자리당') why = r.qty + ' × 빈 자리 ' + (a.holes || 0) + (r.pinRange ? ' · 핀 ' + r.pinRange : '');
@@ -2418,7 +2496,8 @@
     pinRangeText: pinRangeText, pinRangeHas: pinRangeHas, compactPins: compactPins, gaToSq: gaToSq, gaugeValue: gaugeValue, parseGaSq: parseGaSq, GA_SQ_DEFAULT: GA_SQ_DEFAULT,
     parseWireTables: parseWireTables, parseWireTablesPages: parseWireTablesPages, gaugeCheck: gaugeCheck,
     ERP_SHEETS: ERP_SHEETS, isErpMasterBook: isErpMasterBook, erpCompanies: erpCompanies, parseErpMaster: parseErpMaster,
-    housingsFromCavTables: housingsFromCavTables, parseCavSpec: parseCavSpec, revFromPartNo: revFromPartNo
+    housingsFromCavTables: housingsFromCavTables, parseCavSpec: parseCavSpec, revFromPartNo: revFromPartNo,
+    nearHousings: nearHousings, matingOptions: matingOptions, cavPages: cavPages, tablesOnPage: tablesOnPage, pagePairs: pagePairs, sheetPageSummary: sheetPageSummary
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HNLogic = api;

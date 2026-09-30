@@ -594,7 +594,7 @@ const ERP = {
   '목차': [['#', '시트명']],
   'Item': H(['name', 'item_code', 'item_name', 'item_group'], ['T-S', 'T-S', 'T-S', 'X TML'], ['T-L', 'T-L', '단자 대', 'X TML'], ['LK-4', 'LK-4', 'LK-4', 'X LOCK']),
   'hsg_detail': H(['name', 'company', 'hsg_item', 'no_pins', 'lock_sn', 'lock_add_sn', 'cap_sn', 'hsg_match_sn', 'opt_sn', 'use_hsg'],
-    ['A-HX-4P', '회사A', 'HX-4P', '4', 'LK-4', '', 'CP-1', 'HX-4M', '', '1'],
+    ['A-HX-4P', '회사A', 'HX-4P', '4', 'LK-4', '', 'CP-1', 'HX-4M, HX-4M-1', 'OPX-1', '1'],
     ['B-HX-4P', '회사B', 'HX-4P', '4', 'LK-9', '', '', '', '', '1'],
     ['A-HY-3P', '회사A', 'HY-3P', '3', '', '', '', '', '', '1'],
     ['A-HZ-2P', '회사A', 'HZ-2P', '2', '', '', '', '', '', '0']),
@@ -620,10 +620,10 @@ test('회사 자재 DB: 시트 이름으로 알아보고, 회사별 하우징 �
   assert.equal(p.company, '회사A'); assert.equal(p.stats.housings, 3); assert.equal(p.stats.otherCompany, 1);
   const hx = p.rows.filter(r => r.housing === 'HX-4P');
   assert.deepEqual(hx.map(r => [r.kind, r.item, r.basis, r.csaText]), [
-    ['LOCK', 'LK-4', '하우징당', ''], ['커버', 'CV-4', '하우징당', ''], ['부가 자재', 'TB-1', '하우징당', ''], ['부가 자재', 'OP-1', '하우징당', ''],
+    ['LOCK', 'LK-4', '하우징당', ''], ['캡', 'CP-1', '하우징당', ''], ['옵션', 'OPX-1', '하우징당', ''], ['커버', 'CV-4', '하우징당', ''], ['부가 자재', 'TB-1', '하우징당', ''], ['부가 자재', 'OP-1', '하우징당', ''],
     ['단자', 'T-S', '회로당', '0.5~1'], ['단자', 'T-L', '회로당', '1.25~2'], ['씰', 'S-1', '회로당', '0.5~2'], ['더미(빈 자리)', 'D-1', '빈 자리당', '']]);
-  assert.equal(hx[3].optional, true); assert.equal(hx[2].qty, 2); assert.equal(hx[5].note, '큰 핀'); assert.equal(hx[5].name, '단자 대');
-  assert.deepEqual(p.info['HX-4P'], { pins: 4, series: '', cap: 'CP-1', match: 'HX-4M', opt: '', use: true });
+  assert.equal(hx[5].optional, true); assert.equal(hx[4].qty, 2); assert.equal(hx[7].note, '큰 핀'); assert.equal(hx[7].name, '단자 대');
+  assert.deepEqual(p.info['HX-4P'], { pins: 4, series: '', cap: 'CP-1', match: 'HX-4M, HX-4M-1', opt: 'OPX-1', use: true });
   // 블록이 없는 하우징은 hsg_pin + 단자 그룹 → 핀 범위로 묶음
   assert.deepEqual(p.rows.filter(r => r.housing === 'HY-3P').map(r => [r.kind, r.item, r.pinRange]), [['단자', 'T-S', '1~2'], ['단자', 'T-P', '3'], ['더미(빈 자리)', 'D-2', '3']]);
   assert.equal(p.info['HZ-2P'].use, false); assert.equal(p.stats.noChildren, 1);
@@ -635,7 +635,8 @@ test('BOM: 단자·씰은 쓰는 회로만, 굵기(SQ)별로 맞는 단자, 빈 
   const r = L.expandHousingBom([{ housing: 'HX-4P', count: 2, cavSpec: '1:0.5, 2:1.25, 4:18GA' }], p.rows, o);   // 4극 중 3자리 사용
   const q = Object.fromEntries(r.map(x => [x.품목코드, x.수량]));
   // 하우징 2곳 × (T-S: 0.5 · 18GA→0.9 = 2, T-L: 1.25 = 1, 씰 3, 더미 = 빈 자리 3번 1개)
-  assert.deepEqual(q, { 'HX-4P': 2, 'LK-4': 2, 'CV-4': 2, 'TB-1': 4, 'OP-1': 2, 'T-S': 4, 'T-L': 2, 'S-1': 6, 'D-1': 2 });
+  // 캡 · 옵션은 하우징당(2026-09-30 오후 답 ③), 짝 하우징은 고르지 않았으니 없음
+  assert.deepEqual(q, { 'HX-4P': 2, 'LK-4': 2, 'CP-1': 2, 'OPX-1': 2, 'CV-4': 2, 'TB-1': 4, 'OP-1': 2, 'T-S': 4, 'T-L': 2, 'S-1': 6, 'D-1': 2 });
   assert.ok(/선택 자재/.test(r.find(x => x.품목코드 === 'OP-1').확인));
   assert.ok(/SQ 0.5×2, 0.9×2/.test(r.find(x => x.품목코드 === 'T-S').근거));
   // 굵기에 맞는 단자가 없으면 「맞는 단자 없음」 행 + 확인
@@ -712,7 +713,8 @@ test('CAV 표 → BOM: 표 하나 = 커넥터 하나, 표의 쓰는 핀·굵기�
   const tables = L.parseWireTables(DWG).concat([{ kind: 'cav', name: 'X', housing: 'HY', gaugeHead: 'GA', rows: [{ cav: '1', wire: 'a', gauge: '18' }] }]);
   const hc = L.housingsFromCavTables(tables, p.rows, p.info);
   assert.deepEqual(hc.found.map(f => [f.housing, f.count, f.from]), [['HX-4P', 2, 'CAV 표']]);
-  assert.deepEqual(hc.missing, [{ name: 'X', housing: 'HY', near: ['HY-3P'] }]);
+  assert.deepEqual(hc.missing, [{ name: 'X', housing: 'HY', near: ['HY-3P'], page: 1, skipped: false }]);
+  assert.equal(hc.needPick.length, 1);
   const r = L.expandHousingBom(hc.found, p.rows, { info: p.info, gaSq: p.gaSq });
   const q = Object.fromEntries(r.map(x => [x.품목코드, x.수량]));
   // AIRCON 18·16·16GA, COND 18·14·14GA → T-S(0.5~1): 18GA(0.9) ×2, T-L(1.25~2): 16GA(1.25)×2 + 14GA(2)×2 = 4, 씰 6, 더미 2
@@ -725,6 +727,58 @@ test('REV: 품번 끝 영문 1자 = REV, 없으면 빈 칸(사용자 입력) · 
   assert.deepEqual([r.fields.partNo, r.fields.rev, r.source.rev, r.fields.usage], ['999999-00002B', 'B', 'guess', undefined]);
   r = L.extractFromPdf('', [], 0, 0, '999999-12345_0001.pdf');
   assert.equal(r.fields.rev, undefined); assert.ok(r.missing.indexOf('rev') >= 0 && r.missing.indexOf('usage') >= 0);
+});
+
+console.log('품번 선택창 · 캡/옵션/짝 하우징 · 전체 페이지 (2026-09-30 오후 답)');
+test('꼬리 붙은 품번: 자동으로 합치지 않고 후보만(양쪽 방향), 선택창에서 고른 품번으로 BOM · 고르지 않음은 빠짐', () => {
+  const keys = ['HY-3P', 'HY-3P-5', 'HY30', 'HYB', 'DT06'];
+  assert.deepEqual(L.nearHousings('HY', keys), ['HY-3P', 'HY-3P-5']);          // HY30 · HYB 는 꼬리가 아님(구분자 없음)
+  assert.deepEqual(L.nearHousings('DT06-2S', keys), ['DT06']);                // 도면 쪽에 꼬리가 더 붙은 경우
+  assert.deepEqual(L.nearHousings('HY-3P', keys), ['HY-3P-5']);               // 똑같은 품번은 후보가 아님
+  const p = L.parseErpMaster(ERP);
+  const t = [{ kind: 'cav', name: 'X', housing: 'HY', page: 2, rows: [{ cav: '1', wire: 'a', gauge: '0.5' }, { cav: '2', wire: 'b', gauge: '0.5' }] }];
+  // 고르기 전: 찾은 것 없음, 선택창에 나올 것 1
+  let hc = L.housingsFromCavTables(t, p.rows, p.info);
+  assert.deepEqual([hc.found.length, hc.needPick.length], [0, 1]);
+  // 고른 뒤: 고른 품번으로, 도면 품번은 근거·확인에 남김
+  hc = L.housingsFromCavTables(t, p.rows, p.info, { picks: { HY: 'HY-3P' } });
+  assert.deepEqual(hc.found.map(f => [f.housing, f.count, f.drawn]), [['HY-3P', 1, ['HY']]]);
+  const r = L.expandHousingBom(hc.found, p.rows, { info: p.info, gaSq: p.gaSq });
+  assert.deepEqual(r.map(x => [x.품목코드, x.수량]), [['HY-3P', 1], ['T-S', 2], ['D-2', 1]]);
+  assert.ok(/도면 품번\(HY\)과 다른 품번/.test(r[0].확인));
+  // 「고르지 않음」: 선택창에 다시 나오지 않고 빠진 채로 안내
+  hc = L.housingsFromCavTables(t, p.rows, p.info, { picks: { HY: '' } });
+  assert.deepEqual([hc.found.length, hc.needPick.length, hc.missing[0].skipped], [0, 0, true]);
+});
+test('캡 · 옵션은 BOM 에, 짝 하우징은 후보 중 고른 것만 · 예전 마스터(캡 행 없음)도 하우징 정보로 채움', () => {
+  const p = L.parseErpMaster(ERP), o = { info: p.info, gaSq: p.gaSq };
+  assert.deepEqual(L.matingOptions('hx-4p', p.info), ['HX-4M', 'HX-4M-1']);
+  let r = L.expandHousingBom([{ housing: 'HX-4P', count: 3, cavSpec: '1:0.5', matchPick: 'HX-4M-1' }], p.rows, o);
+  const m = r.find(x => x.품목코드 === 'HX-4M-1');
+  assert.deepEqual([m.구분, m.수량, m.확인], ['짝 하우징', 3, '']);
+  assert.ok(!r.some(x => x.품목코드 === 'HX-4M'));
+  // 후보가 아닌 값을 넣으면 확인 표시
+  r = L.expandHousingBom([{ housing: 'HX-4P', count: 1, cavSpec: '1:0.5', matchPick: 'ZZ-1' }], p.rows, o);
+  assert.ok(/후보가 아님/.test(r.find(x => x.품목코드 === 'ZZ-1').확인));
+  // 캡 · 옵션 행을 뺀 예전 마스터 → info 로 채움(중복 없이)
+  const old = p.rows.filter(x => x.kind !== '캡' && x.kind !== '옵션');
+  r = L.expandHousingBom([{ housing: 'HX-4P', count: 2, cavSpec: '1:0.5' }], old, o);
+  assert.deepEqual(r.filter(x => x.구분 === '캡' || x.구분 === '옵션').map(x => [x.품목코드, x.수량]), [['CP-1', 2], ['OPX-1', 2]]);
+  r = L.expandHousingBom([{ housing: 'HX-4P', count: 2, cavSpec: '1:0.5' }], p.rows, o);
+  assert.equal(r.filter(x => x.품목코드 === 'CP-1').length, 1);
+});
+test('전체 페이지: 쪽 쌍 만들기 · CAV 표 쪽 고르기 · 쪽별 요약 엑셀', () => {
+  assert.deepEqual(L.pagePairs(3, 'all', 2, 'all'), [[1, 1], [2, 2], [3, null]]);
+  assert.deepEqual(L.pagePairs(3, 'all', 2, 2), [[1, 2], [2, 2], [3, 2]]);
+  assert.deepEqual(L.pagePairs(1, 1, 3, 'all'), [[1, 1], [1, 2], [1, 3]]);
+  assert.deepEqual(L.pagePairs(3, 2, 3, 9), [[2, 3]]);                        // 없는 쪽 번호는 마지막 쪽으로
+  const tb = [{ kind: 'cav', page: 1 }, { kind: 'cav', page: 3 }, { kind: 'wires', page: 3 }, { kind: 'cav' }];
+  assert.deepEqual(L.cavPages(tb), [1, 3]);
+  assert.equal(L.tablesOnPage(tb, 'all').length, 4); assert.equal(L.tablesOnPage(tb, 3).length, 2); assert.equal(L.tablesOnPage(tb, '1').length, 2);
+  const rows = L.sheetPageSummary([{ pa: 1, pb: 1, add: 2, del: 1, moved: 0, text: { 변경: 1, 추가: 0, 삭제: 0, 이동: 3 }, align: '도곽' },
+    { pa: 2, pb: 2, add: 0, del: 0, moved: 1, text: null, align: '' }, { pa: 3, pb: null }], 'A1', 'B1');
+  assert.deepEqual(rows.slice(2).map(r => r[8]), ['차이 있음', '차이 없음', 'B 에 없는 쪽']);
+  assert.equal(rows[2][5], 1);
 });
 
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));

@@ -4,7 +4,9 @@
    이 브라우저 저장소(localStorage, db.housingMaster · housingInfo · gaSq)에만 둡니다. 두 형식을 받습니다.
     ① 도구 양식(한 줄 = 하우징 하나에 딸린 자재 하나)
     ② 회사 자재 DB 내보내기(hsg_detail · hsg_pin_block · tml_detail … 시트) — 시트·열 이름으로 자동 맞춤
-   계산은 logic.js 순수 함수입니다(parseHousingMaster · parseErpMaster · housingsFromCavTables · expandHousingBom). */
+   계산은 logic.js 순수 함수입니다(parseHousingMaster · parseErpMaster · housingsFromCavTables · expandHousingBom).
+   2026-09-30 오후 답: ① 도면 품번과 꼬리만 다른 DB 품번은 다른 품번으로 보고 선택창에서 고름 ③ 캡 · 옵션은 BOM 에, 짝 하우징은 참고 후 선택
+   ⑤ 여러 장 도면은 CAV 표를 읽을 쪽을 고르되 「전체 페이지」(기본)도 됨. */
 (function (root) {
   'use strict';
   var App = root.HNApp, L = App.L, esc = App.esc, $ = App.$, $$ = App.$$;
@@ -22,7 +24,7 @@
   ];
 
   function st() {
-    if (!App.ui.bom) App.ui.bom = { drw: '', text: '', found: null, missing: [], merge: false, extra: '' };
+    if (!App.ui.bom) App.ui.bom = { drw: '', text: '', found: null, missing: [], merge: false, extra: '', page: 'all', picks: {}, match: {} };
     return App.ui.bom;
   }
   function master() { return App.db.housingMaster || (App.db.housingMaster = []); }
@@ -32,7 +34,8 @@
 
   App.view('bom', function (main, parts, q) {
     var s = st(), db = App.db, m = master();
-    if (q.d && q.d !== s._q) { s._q = q.d; s.drw = q.d; s.found = null; }
+    if (q.d && q.d !== s._q) { s._q = q.d; s.drw = q.d; s.found = null; s.page = 'all'; }
+    var dsel = s.drw ? L.findBy(db.drawings, s.drw) : null, pages = dsel ? L.cavPages(dsel.cavTables) : [];
     var hs = Object.keys(uniqKeys(m));
     var ms = db.housingMasterStats;
     var h = '<div class="page-head"><h1>BOM 구성 — 하우징 ASSY 자재</h1></div>' +
@@ -53,7 +56,7 @@
       '<p><strong>회사 자재 DB 내보내기</strong> — 시트 <code>hsg_detail</code> 이 있으면 이 형식으로 봅니다. 시트·열 이름으로 자동으로 맞춥니다: ' +
       'hsg_detail(하우징 · 핀 수 · LOCK) → hsg_pin_block(핀 범위별 단자 · 씰 · 더미, 없으면 hsg_pin) · hsg_cover(커버) · hsg_etc_add_link_detail(부가 자재) · ' +
       'tml_detail · seal_detail(단자·씰이 맞는 전선 굵기 SQ 범위) · ga_sq_conversion(GA → SQ) · Item(품명). 회사(company)가 여럿이면 고르게 합니다. ' +
-      '짝 하우징 · 캡 · 옵션 품번은 참고로만 보여 주고 BOM 에 넣지 않습니다.</p>' +
+      '캡 · 옵션 품번은 BOM 에 넣고, 짝 하우징은 참고로 보여 준 뒤 「찾은 하우징」 표에서 고른 것만 넣습니다.</p>' +
       '<p><strong>도구 양식</strong> — 한 줄 = 하우징 하나에 딸린 자재 하나. 하우징 칸이 비어 있으면 윗줄 하우징으로 봅니다(병합 셀 그대로 붙여도 됨).</p><ul>' +
       '<li>꼭 있어야 하는 열: <strong>하우징 품번</strong>, <strong>자재 품번</strong>. 있으면 쓰는 열: 자재명, 구분(LOCK·단자·씰·더미), 수량, 단위, 수량 기준(하우징당 / 회로당 / 빈 자리당), 적용 전선(SQ — 예: 0.5~1.0), 핀 수, 적용 핀(CAV — 예: 1~3, 5), 비고.</li>' +
       '<li>수량 기준을 비워 두면 「단자·씰」은 회로당, 「더미」는 빈 자리당, 나머지는 하우징당으로 봅니다.</li>' +
@@ -70,6 +73,9 @@
       '<label class="field"><span>등록한 도면</span><select id="bomDrw"><option value="">— 고르기 —</option>' + db.drawings.map(function (x) {
         return '<option value="' + x.id + '"' + (x.id === s.drw ? ' selected' : '') + '>' + esc(App.drawingLabel(x)) + '</option>';
       }).join('') + '</select></label>' +
+      (pages.length > 1 ? '<label class="field"><span>CAV 표를 읽을 쪽 (이 도면 ' + (dsel.pages || pages[pages.length - 1]) + '장)</span><select id="bomPage">' +
+        '<option value="all"' + (s.page === 'all' ? ' selected' : '') + '>전체 페이지 — ' + pages.length + '개 쪽의 CAV 표를 함께</option>' +
+        pages.map(function (p) { return '<option value="' + p + '"' + (String(s.page) === String(p) ? ' selected' : '') + '>' + p + '쪽만</option>'; }).join('') + '</select></label>' : '') +
       '<label class="field wide"><span>하우징 품번 직접 넣기 (글자 정보가 없는 PDF 일 때 — 쉼표로 구분, 같은 품번을 여러 번 쓰면 개수)</span><input type="text" id="bomExtra" value="' + esc(s.extra) + '" placeholder="예: DT06-2S-CE06, DT06-2S-CE06, CN-0118"></label></div>' +
       '<div class="actions" style="margin-top:8px"><button type="button" class="btn btn-primary" id="bomFind"' + (m.length ? '' : ' disabled') + '>하우징 찾기</button>' +
       (m.length ? '' : '<span class="small muted">마스터를 먼저 넣어 주세요.</span>') + '</div>' +
@@ -144,7 +150,9 @@
       App.db.housingMaster = []; App.db.housingMasterName = ''; App.db.housingInfo = {}; App.db.gaSq = {}; App.db.housingMasterStats = null;
       App.save(); s.found = null; App.rerender();
     });
-    $('#bomDrw', main).addEventListener('change', function () { s.drw = this.value; s.found = null; App.rerender(); });
+    $('#bomDrw', main).addEventListener('change', function () { s.drw = this.value; s.found = null; s.page = 'all'; App.rerender(); });
+    var bp = $('#bomPage', main);
+    if (bp) bp.addEventListener('change', function () { s.page = this.value === 'all' ? 'all' : +this.value; if (s.found) find(s); });
     $('#bomExtra', main).addEventListener('change', function () { s.extra = this.value; });
     $('#bomFind', main).addEventListener('click', function () { s.extra = $('#bomExtra', main).value; find(s); });
     $('#bomMerge', main).addEventListener('change', function () { s.merge = this.checked; renderBom(s); });
@@ -176,25 +184,38 @@
     });
   }
 
-  function find(s) {
-    var d = s.drw ? L.findBy(App.db.drawings, s.drw) : null, m = master(), inf = info();
-    var found = [];
+  // 비슷한 품번 선택 결과: 도면이 있으면 도면에(d.bomPicks), 없으면 이 화면 상태에 둡니다
+  function picksOf(s, d) { return d ? (d.bomPicks || (d.bomPicks = {})) : s.picks; }
+  function matchOf(s, d) { return d ? (d.bomMatch || (d.bomMatch = {})) : s.match; }
+  function find(s, noAsk) {
+    var d = s.drw ? L.findBy(App.db.drawings, s.drw) : null, m = master(), inf = info(), picks = picksOf(s, d);
+    var found = [], need = [], keys = Object.keys(uniqKeys(m)), has = {};
+    keys.forEach(function (k) { has[k] = 1; });
     s.missing = [];
-    // ① CAV 표에서 읽은 커넥터(하우징 · 쓰는 핀 · 굵기) — 가장 정확
+    // ① CAV 표에서 읽은 커넥터(하우징 · 쓰는 핀 · 굵기) — 가장 정확. 쪽을 골랐으면 그 쪽만, 기본은 전체 페이지
     if (d && d.cavTables && d.cavTables.length) {
-      var hc = L.housingsFromCavTables(d.cavTables, m, inf);
-      found = hc.found; s.missing = hc.missing;
+      var hc = L.housingsFromCavTables(d.cavTables, m, inf, { picks: picks, page: s.page });
+      found = hc.found; s.missing = hc.missing; need = hc.needPick.slice();
     }
     // ② 도면 글자 · 주요 커넥터 칸
     (d ? L.findHousings(d.rawText || '', d.connectors || '', m, inf) : []).forEach(function (x) {
       if (!found.some(function (y) { return y.housing === x.housing; })) found.push(x);
     });
     // 직접 넣은 품번: 같은 품번을 여러 번 쓰면 개수로 셉니다(도면에서 찾은 것보다 우선)
+    // 마스터에 없는 품번은 CAV 표와 같이 비슷한 품번 선택창을 거칩니다(고른 품번으로 바꿔 넣음)
     var extra = {};
     L.splitList(s.extra).forEach(function (x) { x = L.norm(x); extra[x] = (extra[x] || 0) + 1; });
-    Object.keys(extra).forEach(function (k) {
+    Object.keys(extra).forEach(function (k0) {
+      var k = k0, drawn = '';
+      if (!has[k0]) {
+        var pk = Object.prototype.hasOwnProperty.call(picks, k0) ? L.norm(picks[k0]) : null, near = L.nearHousings(k0, keys);
+        if (pk && has[pk]) { k = pk; drawn = k0; }
+        else if (near.length && pk == null) { need.push({ name: '직접 입력', housing: k0, near: near }); return; }
+        else if (near.length) { s.missing.push({ name: '직접 입력', housing: k0, near: near, skipped: true }); return; }
+      }
       var f = found.filter(function (x) { return x.housing === k; })[0];
-      if (f) { f.count = extra[k]; f.from = '직접 입력'; delete f.instances; } else found.push({ housing: k, count: extra[k], from: '직접 입력' });
+      if (f) { f.count = extra[k0]; f.from = '직접 입력'; delete f.instances; } else found.push(f = { housing: k, count: extra[k0], from: '직접 입력' });
+      if (drawn) f.drawn = [drawn];
     });
     // 도면에 저장해 둔 회로 수·전선 굵기·사용 핀이 있으면 이어 씁니다(CAV 표로 찾은 것은 표 값 그대로)
     var saved = d && d.bomInputs ? d.bomInputs : {};
@@ -206,11 +227,44 @@
       f.cavSpec = sv.cavSpec || '';
       if (sv.count != null && f.from !== '직접 입력') f.count = sv.count;
     });
+    var mt = matchOf(s, d);
+    found.forEach(function (f) { f.matchPick = mt[f.housing] || ''; });
     s.found = found;
+    // 비슷한 품번만 있는 것 → 선택창(자동으로 같은 하우징으로 보지 않음)
+    var seen = {};
+    need = need.filter(function (x) { if (seen[x.housing]) return false; seen[x.housing] = 1; return true; });
+    if (need.length && !noAsk) {
+      renderFound(s);
+      askPicks(need).then(function (res) {
+        if (!res) return;
+        Object.keys(res).forEach(function (h) { picks[h] = res[h]; });
+        if (d) App.save();
+        find(s, true);
+      });
+      return;
+    }
     if (!found.length) App.toast(d ? '이 도면에서 마스터에 있는 하우징을 찾지 못했습니다. 직접 넣어 주세요.' : '도면을 고르거나 하우징 품번을 직접 넣어 주세요.');
     renderFound(s);
   }
 
+  // 선택창: 도면(또는 직접 넣은) 품번과 꼬리만 다른 DB 품번 후보를 보여 주고 하나를 고르게 합니다
+  function askPicks(need) {
+    var html = '<p>도면에 적힌 품번이 자재 DB 에 그대로 없습니다. 꼬리(예: <code>-5</code>)만 다른 품번은 <strong>서로 다른 품번</strong>으로 보고 자동으로 합치지 않습니다. 쓸 품번을 골라 주세요.</p>' +
+      need.map(function (x, i) {
+        return '<fieldset class="pick-set"><legend><strong>' + esc(x.housing || '(품번 못 읽음)') + '</strong>' + (x.name ? ' <span class="small muted">' + esc(x.name) + (x.page ? ' · ' + x.page + '쪽' : '') + '</span>' : '') + '</legend>' +
+          x.near.map(function (k, j) {
+            var r = refText(k);
+            return '<label class="pick-row"><input type="radio" name="pk' + i + '" value="' + esc(k) + '"' + (j === 0 ? ' checked' : '') + '> ' + esc(k) + (r ? ' <span class="small muted">' + esc(r) + '</span>' : '') + '</label>';
+          }).join('') +
+          '<label class="pick-row"><input type="radio" name="pk' + i + '" value=""> 고르지 않음 — BOM 에서 뺌</label></fieldset>';
+      }).join('') + '<p class="small muted">고른 값은 이 도면에 저장되어 다음에는 묻지 않습니다. 「품번 다시 고르기」로 바꿀 수 있습니다.</p>';
+    return App.dialog('비슷한 품번 고르기 (' + need.length + '건)', html, [{ label: '나중에', value: 'later' }, { label: '고른 대로 적용', value: 'ok', primary: true }]).then(function (v) {
+      if (v !== 'ok') return null;
+      var box = document.getElementById('dialogContent'), out = {};
+      need.forEach(function (x, i) { var c = box.querySelector('input[name="pk' + i + '"]:checked'); out[x.housing] = c ? c.value : ''; });
+      return out;
+    });
+  }
   function instText(f) {
     var gs = gaSq();
     return f.instances.map(function (i) {
@@ -229,7 +283,13 @@
     var box = $('#foundBox'); if (!box) return;
     var f = s.found || [];
     box.innerHTML = '<h3 style="margin-top:12px">찾은 하우징 ' + f.length + '종</h3>' + App.table([
-      { label: '하우징 품번', render: function (x) { var r = refText(x.housing); return '<strong>' + esc(x.housing) + '</strong>' + (r ? '<br><span class="small muted">' + esc(r) + '</span>' : ''); } },
+      { label: '하우징 품번', render: function (x) {
+        var r = refText(x.housing), mo = L.matingOptions(x.housing, info());
+        return '<strong>' + esc(x.housing) + '</strong>' + (x.drawn ? '<br><span class="small src-missing">도면 품번 ' + esc(x.drawn.join(', ')) + ' → 고른 품번</span>' : '') +
+          (r ? '<br><span class="small muted">' + esc(r) + '</span>' : '') +
+          (mo.length ? '<br><label class="small">짝 하우징 <select class="in-sm" style="width:auto" data-match="' + f.indexOf(x) + '"><option value="">BOM 에 넣지 않음 (참고만)</option>' +
+            mo.map(function (k) { return '<option value="' + esc(k) + '"' + (L.norm(x.matchPick) === L.norm(k) ? ' selected' : '') + '>' + esc(k) + ' 넣기</option>'; }).join('') + '</select></label>' : '');
+      } },
       { label: '찾은 곳', key: 'from' },
       { label: '도면 안 개수', render: function (x) {
         return x.instances ? esc(x.count) + '곳' : '<input type="number" min="0" class="in-sm" data-fi="' + f.indexOf(x) + '" data-fk="count" value="' + esc(x.count) + '">';
@@ -243,11 +303,29 @@
           '<label>굵기 <input type="text" class="in-sm" data-fi="' + i + '" data-fk="csa" value="' + esc(x.csa) + '" placeholder="예: 0.5"></label></div>';
       } }
     ], f, { empty: '찾은 하우징이 없습니다.' }) +
-      (s.missing && s.missing.length ? '<div class="warn-box small">CAV 표에서 읽었지만 마스터에 없는 하우징 ' + s.missing.length + '개: ' + s.missing.map(function (x) {
-        return esc((x.name ? x.name + ' ' : '') + (x.housing || '(품번 못 읽음)')) + (x.near.length ? ' — 비슷한 품번: ' + esc(x.near.join(', ')) : '');
-      }).join(' · ') + '. 품번이 다르게 적힌 것이면 위 「직접 넣기」 칸에 마스터의 품번으로 넣어 주세요.</div>' : '') +
+      (s.missing && s.missing.length ? '<div class="warn-box small">마스터에 없는 하우징 ' + s.missing.length + '개(BOM 에 넣지 않음): ' + s.missing.map(function (x) {
+        return esc((x.name ? x.name + ' ' : '') + (x.housing || '(품번 못 읽음)')) + (x.skipped ? ' — 「고르지 않음」으로 뺌' : x.near.length ? ' — 비슷한 품번 ' + esc(x.near.join(', ')) + ' (아직 고르지 않음)' : ' — 비슷한 품번 없음');
+      }).join(' · ') + '. 품번이 다르게 적힌 것이면 「품번 다시 고르기」로 고르거나 위 「직접 넣기」 칸에 마스터의 품번으로 넣어 주세요.</div>' : '') +
+      (hasPicks(s) || (s.missing || []).some(function (x) { return x.near && x.near.length; }) ? '<div class="actions"><button type="button" class="btn btn-sm" id="rePick">품번 다시 고르기</button></div>' : '') +
       '<p class="small muted">「사용 핀:굵기」는 전선이 들어가는 핀 번호와 그 전선 굵기(SQ 또는 GA)입니다 — 단자·씰은 이 핀 수만큼, 더미는 나머지 빈 자리만큼 셉니다. ' +
       '비워 두면 예전처럼 「회로 수 · 굵기 한 가지」로 셉니다(핀 번호는 1번부터로 봄). 도면을 고른 경우 고친 값은 그 도면에 저장됩니다.</p>';
+    $$('[data-match]', box).forEach(function (sel) {
+      sel.addEventListener('change', function () {
+        var x = f[+sel.getAttribute('data-match')], d = s.drw ? L.findBy(App.db.drawings, s.drw) : null;
+        x.matchPick = sel.value;
+        var mt = matchOf(s, d);
+        if (sel.value) mt[x.housing] = sel.value; else delete mt[x.housing];
+        if (d) App.save();
+        renderBom(s);
+      });
+    });
+    var rp = $('#rePick', box);
+    if (rp) rp.addEventListener('click', function () {
+      var d = s.drw ? L.findBy(App.db.drawings, s.drw) : null, p = picksOf(s, d);
+      Object.keys(p).forEach(function (k) { delete p[k]; });
+      if (d) App.save();
+      find(s);
+    });
     $$('[data-fi]', box).forEach(function (inp) {
       inp.addEventListener('change', function () {
         var x = f[+inp.getAttribute('data-fi')], k = inp.getAttribute('data-fk');
@@ -264,13 +342,17 @@
     renderBom(s);
   }
 
+  function hasPicks(s) {
+    var d = s.drw ? L.findBy(App.db.drawings, s.drw) : null, p = d ? d.bomPicks || {} : s.picks;
+    return Object.keys(p).length > 0;
+  }
   function renderBom(s) {
     var box = $('#bomOut'); if (!box) return;
     if (!s.found || !s.found.length) { box.innerHTML = '<p class="muted small">하우징을 찾으면 여기에 BOM 이 나옵니다.</p>'; return; }
     var rows = L.expandHousingBom(s.found, master(), bomOpt(s.merge));
     var d = s.drw ? L.findBy(App.db.drawings, s.drw) : null;
     var nChk = rows.filter(function (r) { return r.확인; }).length;
-    box.innerHTML = (nChk ? '<div class="warn-box small">확인이 필요한 행 ' + nChk + '건 — 「확인」 칸을 봐 주세요(전선 굵기 미입력, 굵기에 맞는 단자 없음, 선택 자재, 마스터에 없는 하우징).</div>' : '') +
+    box.innerHTML = (nChk ? '<div class="warn-box small">확인이 필요한 행 ' + nChk + '건 — 「확인」 칸을 봐 주세요(전선 굵기 미입력, 굵기에 맞는 단자 없음, 선택 자재, 마스터에 없는 하우징, 도면과 다른 품번을 고른 하우징).</div>' : '') +
       App.table([
         { label: '품목코드', render: function (r) { return r.구분 === '하우징' ? '<strong>' + esc(r.품목코드) + '</strong>' : esc(r.품목코드); } },
         { label: '품목명', key: '품목명' }, { label: '구분', key: '구분' },
@@ -282,6 +364,7 @@
       '<div class="actions" style="margin-top:8px"><button type="button" class="btn" id="bomX">BOM (엑셀)</button>' +
       '<button type="button" class="btn" id="bomToCmp">도면 비교 「5 부품 표 비교」의 B 로 보내기</button></div>' +
       '<p class="small muted">출처: 「CAV 표 · 도면 글자 · 주요 커넥터 칸 · 직접 입력」 = 도면에서 읽은 하우징, 「ASSY 마스터 (하우징)」 = 마스터에서 불러온 딸린 자재. ' +
+      '캡 · 옵션은 하우징당 자재로 늘 넣고, 짝 하우징은 위 표에서 고른 것만 넣습니다. ' +
       '수량 = 하우징당 자재는 마스터 수량 × 개수, 단자·씰은 마스터 수량 × <strong>쓰는 회로 수</strong>(굵기별로 맞는 단자에), 더미는 × 빈 자리 수.</p>';
     var label = d ? App.drawingLabel(d) : '직접 입력';
     $('#bomX', box).addEventListener('click', function () {

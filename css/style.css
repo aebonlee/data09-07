@@ -253,3 +253,10 @@ tr.clickable:hover td, tr.sel td { background: var(--info-bg); }
 details > summary { cursor: pointer; margin: 6px 0; }
 .sw-mv { background: rgb(126, 34, 206); }
 .in-sm { width: 110px; min-height: 32px; }
+
+/* 2026-09-30 오후 — 비슷한 품번 선택창 · 전체 페이지 미리보기 */
+#dialogContent { max-height: 60vh; overflow-y: auto; }
+.pick-set { border: 1px solid var(--line, #d6dde6); border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; }
+.pick-set legend { padding: 0 4px; word-break: keep-all; overflow-wrap: break-word; }
+.pick-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; word-break: keep-all; overflow-wrap: break-word; }
+.preview-page { margin: 10px 0 4px; }

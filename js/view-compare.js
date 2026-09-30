@@ -2,7 +2,9 @@
    2차(2026-09-29 오후): 실제 CAD PDF 두 쌍 기준으로 조정 — PDF 고해상도 렌더, 도곽 자동 정렬 + 미세 이동 보정,
    PDF 글자 비교(치수 350 → 450 같은 글자 변경), 실제 BOM 양식(ERP 정전개 조회) 읽기, ECN 양식 9절에 그림 넣은 엑셀.
    도면 그림은 이 창의 메모리(canvas)에서만 다룹니다. 서버로 보내지 않고 localStorage 에도 넣지 않습니다.
-   계산(이진화·팽창·차이·연결요소·유사변환·도곽·글자 비교·BOM)은 logic.js 순수 함수입니다. */
+   계산(이진화·팽창·차이·연결요소·유사변환·도곽·글자 비교·BOM)은 logic.js 순수 함수입니다.
+   2026-09-30 오후 답 ⑤: 여러 장짜리 PDF 는 쪽 고르기를 그대로 두고 「전체 페이지」도 고를 수 있습니다 — 쪽끼리 차례로 비교해
+   쪽별 요약을 보여 주고(logic.pagePairs · sheetPageSummary), 한 쪽을 누르면 그 쪽을 크게 봅니다. 한 번에 한 쪽만 메모리에 둡니다. */
 (function (root) {
   'use strict';
   var App = root.HNApp, L = App.L, esc = App.esc, $ = App.$, $$ = App.$$;
@@ -16,7 +18,9 @@
         // 기본값은 벡터(CAD) PDF 기준입니다 — 스캔 흔들림이 없어 허용치 1, 색 선까지 잡도록 어둡기 200(2026-09-29 실제 도면으로 조정)
         opt: { thr: 200, tol: 1, minArea: 8, gap: 12, fade: true, auto: true, block: false, roi: false, moves: true, pdfSide: 3600 },
         view: 'side', split: 50, res: null, sel: 0, tsel: 0,
-        drwA: '', drwB: '', bomA: null, bomB: null, bomKey: '', bomCols: null, bomRes: null, ecnId: ''
+        drwA: '', drwB: '', bomA: null, bomB: null, bomKey: '', bomCols: null, bomRes: null, ecnId: '',
+        // 쪽 고르기: srcA·srcB = { buf, name, n(쪽 수), sel(쪽 번호 | 'all') } — PDF 원본은 이 창 메모리에만. preA·preB = 불러오기 전에 고른 값
+        srcA: null, srcB: null, preA: 1, preB: 1, all: null
       };
     }
     return App.ui.cmp;
@@ -76,7 +80,8 @@
       rng('gap', '묶음 거리 (픽셀)', 0, 60, 1, o.gap, '이만큼 가까운 조각은 한 상자로 묶습니다') +
       '</div><label class="small" style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="optMoves"' + (o.moves ? ' checked' : '') + '> 옮겨진 것 따로 보기 — 표의 줄이 밀리거나 블록을 다른 자리로 옮겨 <strong>내용은 같고 위치만 바뀐 선</strong>은 보라로 칠하고 적색·파랑에서 뺍니다(옮긴 뒤 값까지 바뀐 곳은 적색으로 남음)</label>' +
       '<label class="small" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="optFade"' + (o.fade ? ' checked' : '') + '> 공통 선은 흐리게 보기</label>' +
-      '<div class="actions" style="margin-top:10px"><button type="button" class="btn btn-primary" id="runDiff"' + (s.A && s.B ? '' : ' disabled') + '>차이 계산</button>' +
+      '<div class="actions" style="margin-top:10px"><button type="button" class="btn btn-primary" id="runDiff"' + (s.A && s.B ? '' : ' disabled') + '>' + (isAll(s) ? '전체 페이지 차이 계산' : '차이 계산') + '</button>' +
+      (isAll(s) && s.all ? '<button type="button" class="btn" id="runOne">지금 보는 쪽만 다시 계산</button>' : '') +
       '<span class="small muted" id="diffInfo">' + (s.res ? esc(resText(s.res)) : '') + '</span></div></div>';
 
     // 4 결과
@@ -86,6 +91,7 @@
       }).join('') + '</div></div>' +
       '<ul class="legend"><li><span class="sw sw-add"></span>적색 — B에만 있는 선·글자 (A와 비교해 추가·변경된 곳)</li>' +
       '<li><span class="sw sw-del"></span>파랑 — A에만 있는 선·글자 (B에서 사라진 곳)</li><li><span class="sw sw-mv"></span>보라 — 내용은 같고 위치만 옮겨진 곳 (A 는 원래 자리, B 는 옮긴 자리. 줄을 누르면 화살표)</li><li><span class="sw sw-ink"></span>회색 — 두 도면 공통</li></ul>' +
+      pageSummary(s) +
       '<div id="resultBox">' + (s.res ? '' : '<p class="muted small">「차이 계산」을 누르면 결과가 여기에 나옵니다. 먼저 보고 싶으면 위의 「예시 불러오기」를 눌러 보세요.</p>') + '</div>' +
       (s.view === 'slider' && s.res ? '<label class="small" style="display:block;margin-top:8px">왼쪽 A ↔ 오른쪽 B 경계 <input type="range" id="splitR" min="0" max="100" value="' + s.split + '" style="width:100%"></label>' : '') +
       '<div id="zoomBox"></div><div id="textBox"></div><div id="regionBox"></div></div>';
@@ -108,9 +114,43 @@
     return '<div class="cmp-slot"><h3>' + (k === 'A' ? 'A품번 — 기준 도면 (변경 전)' : 'B품번 — 비교 대상 도면 (변경 후)') + '</h3>' +
       '<label class="field"><span>' + k + '품번</span><input type="text" list="partNos" id="part' + k + '" value="' + esc(part) + '" placeholder="예: HN-A0231"></label>' +
       '<div class="form-grid" style="margin-top:8px"><label class="field wide"><span>도면 파일 (PDF · PNG · JPG)</span><input type="file" id="file' + k + '" accept="application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg"></label>' +
-      '<label class="field"><span>PDF 쪽 번호</span><input type="number" id="page' + k + '" min="1" value="1"></label></div>' +
+      pageField(k, s) + '</div>' +
       (canPdf ? '<p class="small"><button type="button" class="btn btn-sm" data-usereg="' + k + '">등록한 PDF(' + esc(L.findBy(db.drawings, drwId).fileName || drwId) + ') 불러오기</button></p>' : '') +
       '<p class="small ' + (img ? '' : 'muted') + '" id="info' + k + '">' + esc(info) + '</p></div>';
+  }
+  // 쪽 고르기 — 쪽 번호마다 하나 + 「전체 페이지」(2026-09-30 오후 답 ⑤). 파일을 불러오기 전에는 1쪽 · 전체 페이지만 고릅니다
+  function pageField(k, s) {
+    var src = s['src' + k], sel = src ? src.sel : s['pre' + k], n = src ? src.n : 0, o = '';
+    if (n) for (var i = 1; i <= n; i++) o += '<option value="' + i + '"' + (String(sel) === String(i) ? ' selected' : '') + '>' + i + ' / ' + n + '쪽</option>';
+    else o += '<option value="1"' + (sel !== 'all' ? ' selected' : '') + '>1쪽 (불러오면 쪽을 고를 수 있음)</option>';
+    if (!n || n > 1) o += '<option value="all"' + (sel === 'all' ? ' selected' : '') + '>전체 페이지' + (n ? ' (' + n + '쪽)' : '') + '</option>';
+    return '<label class="field"><span>PDF 쪽</span><select id="page' + k + '">' + o + '</select></label>';
+  }
+  function isAll(s) { return !!((s.srcA && s.srcA.sel === 'all') || (s.srcB && s.srcB.sel === 'all')); }
+  function pairsOf(s) {
+    var a = s.srcA, b = s.srcB;
+    return L.pagePairs(a ? a.n : 1, a ? a.sel : 1, b ? b.n : 1, b ? b.sel : 1);
+  }
+  // 쪽별 요약 표(전체 페이지로 계산했을 때)
+  function pageSummary(s) {
+    var al = s.all;
+    if (!al) return isAll(s) && s.A && s.B ? '<p class="small muted">「전체 페이지 차이 계산」을 누르면 쪽끼리 차례로 비교해 쪽별 요약이 여기에 나옵니다. 쪽 수가 많으면 시간이 걸립니다.</p>' : '';
+    var nd = al.sums.filter(function (x) { return x.pa != null && x.pb != null && x.add + x.del + (x.text ? x.text.변경 + x.text.추가 + x.text.삭제 : 0) > 0; }).length;
+    return '<h3 style="margin-top:6px">쪽별 요약 — ' + al.sums.length + '쌍 중 차이 있는 쪽 ' + nd + '쌍</h3>' +
+      '<p class="small muted">쪽마다 도곽 자동 정렬로 비교한 결과입니다. 「보기」를 누르면 그 쪽을 아래에 크게 보여 주고, 그 쪽에서는 기준점 찍기 · 설정 바꾸기를 할 수 있습니다.</p>' +
+      App.table([
+        { label: 'A 쪽', render: function (x) { return x.pa == null ? '<span class="muted">(없음)</span>' : esc(x.pa); } },
+        { label: 'B 쪽', render: function (x) { return x.pb == null ? '<span class="muted">(없음)</span>' : esc(x.pb); } },
+        { label: '선 차이', render: function (x) { return x.pa == null || x.pb == null ? '' : '적색 ' + x.add + ' · 파랑 ' + x.del + (x.moved ? ' · 이동 ' + x.moved : ''); } },
+        { label: '글자 차이', render: function (x) { return x.text ? '변경 ' + x.text.변경 + ' · 추가 ' + x.text.추가 + ' · 삭제 ' + x.text.삭제 : x.pa == null || x.pb == null ? '' : '<span class="muted">그림 비교만</span>'; } },
+        { label: '판정', render: function (x) {
+          if (x.pa == null) return '<span class="badge b-warn">A 에 없는 쪽</span>';
+          if (x.pb == null) return '<span class="badge b-warn">B 에 없는 쪽</span>';
+          var n = x.add + x.del + (x.text ? x.text.변경 + x.text.추가 + x.text.삭제 : 0);
+          return n ? '<span class="badge b-danger">차이 있음</span>' : '<span class="badge b-ok">차이 없음</span>';
+        } },
+        { label: '', render: function (x) { var i = al.sums.indexOf(x); return x.pa == null || x.pb == null ? '' : '<button type="button" class="btn btn-sm' + (al.cur === i ? ' btn-primary' : '') + '" data-pgview="' + i + '">' + (al.cur === i ? '보는 중' : '보기') + '</button>'; } }
+      ], al.sums);
   }
   // 글자 정보가 있으면 글자 비교, 없으면 그림(선) 비교만 — 오류가 아니라 안내로 알립니다(2026-09-30 수강생 답)
   function modeText(m) {
@@ -200,7 +240,7 @@
             var cy = m[5] + Math.sin(ang) * wid / 2 - Math.cos(ang) * hgt / 2;
             text.push({ str: String(it.str).trim(), x: cx, y: cy, h: hgt, w: wid, ang: ang });
           });
-          return { canvas: c, w: c.width, h: c.height, name: name + ' (' + p + '/' + pdf.numPages + '쪽)', kind: 'pdf', text: text };
+          return { canvas: c, w: c.width, h: c.height, name: name + ' (' + p + '/' + pdf.numPages + '쪽)', kind: 'pdf', text: text, pages: pdf.numPages, page: p };
         });
       });
     });
@@ -208,12 +248,21 @@
   function loadInto(s, k, file, pageNo) {
     var isPdf = /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
     App.toast(k + ' 도면을 불러오는 중입니다…');
-    var p = isPdf ? file.arrayBuffer().then(function (buf) { return loadPdfPage(buf, pageNo, file.name, s.opt.pdfSide); }) : loadImageFile(file);
-    p.then(function (img) { setImage(s, k, img); App.toast(k + ' 도면을 불러왔습니다.'); })
+    var p = isPdf ? file.arrayBuffer().then(function (buf) { return usePdf(s, k, buf, file.name, pageNo); }) : loadImageFile(file).then(function (img) { s['src' + k] = null; return img; });
+    p.then(function (img) { setImage(s, k, img); App.toast(k + ' 도면을 불러왔습니다' + (img.pages > 1 ? ' (' + img.pages + '쪽 — 「PDF 쪽」에서 쪽이나 전체 페이지를 고를 수 있습니다)' : '') + '.'); })
       .catch(function (e) { App.toast(e.message || String(e)); });
   }
+  // PDF 원본을 쪽 고르기용으로 이 창 메모리에 두고, 고른 쪽(전체 페이지면 첫 쌍의 쪽)을 그립니다
+  function usePdf(s, k, buf, name, sel) {
+    var keep = buf.slice(0);
+    var first = sel === 'all' ? 1 : +sel || 1;
+    return loadPdfPage(buf, first, name, s.opt.pdfSide).then(function (img) {
+      s['src' + k] = { buf: keep, name: name, n: img.pages, sel: sel === 'all' && img.pages > 1 ? 'all' : img.page };
+      return img;
+    });
+  }
   function setImage(s, k, img) {
-    s[k] = img; s.ptsA = []; s.ptsB = []; s.res = null; s.picking = false; s.sel = 0; s.tsel = 0; s.sample = false;
+    s[k] = img; s.ptsA = []; s.ptsB = []; s.res = null; s.picking = false; s.sel = 0; s.tsel = 0; s.sample = false; s.all = null;
     // 파일명에 품번이 보이면 품번 칸을 채웁니다(비어 있을 때만)
     var m = String(img.name).match(/(\d{6})[-_](\d{4,6}[A-Z]?)(?![0-9])/i);
     if (m) { var pn = m[1] + '-' + m[2].toUpperCase(); if (k === 'A' && !s.partA) s.partA = pn; if (k === 'B' && !s.partB) s.partB = pn; }
@@ -225,7 +274,16 @@
     ['A', 'B'].forEach(function (k) {
       $('#file' + k, main).addEventListener('change', function () {
         var f = this.files[0]; if (!f) return;
-        loadInto(s, k, f, +$('#page' + k, main).value || 1);
+        var v = $('#page' + k, main).value;
+        loadInto(s, k, f, v === 'all' ? 'all' : +v || 1);
+      });
+      $('#page' + k, main).addEventListener('change', function () {
+        var v = this.value === 'all' ? 'all' : +this.value, src = s['src' + k];
+        if (!src) { s['pre' + k] = v; return; }
+        src.sel = v; s.all = null;
+        // 전체 페이지면 비교할 첫 쌍의 쪽을, 아니면 고른 쪽을 그립니다
+        var pr = pairsOf(s)[0], pn = k === 'A' ? pr[0] : pr[1];
+        loadPdfPage(src.buf.slice(0), pn || 1, src.name, s.opt.pdfSide).then(function (img) { setImage(s, k, img); }).catch(function (e) { App.toast(e.message); });
       });
       $('#part' + k, main).addEventListener('change', function () {
         if (k === 'A') s.partA = this.value.trim(); else s.partB = this.value.trim();
@@ -237,7 +295,8 @@
     $$('[data-usereg]', main).forEach(function (b) {
       b.addEventListener('click', function () {
         var k = b.getAttribute('data-usereg'), id = k === 'A' ? s.drwA : s.drwB, d = L.findBy(App.db.drawings, id);
-        loadPdfPage(App.files[id].slice(0), +$('#page' + k, main).value || 1, d.fileName || d.partNo, s.opt.pdfSide)
+        var v = $('#page' + k, main).value;
+        usePdf(s, k, App.files[id].slice(0), d.fileName || d.partNo, v === 'all' ? 'all' : +v || 1)
           .then(function (img) { setImage(s, k, img); }).catch(function (e) { App.toast(e.message); });
       });
     });
@@ -266,7 +325,12 @@
     $('#optFade', main).addEventListener('change', function () { s.opt.fade = this.checked; if (s.res) { s.res.cache = {}; renderResult(s); } });
     $('#runDiff', main).addEventListener('click', function () {
       var b = this; b.disabled = true; b.textContent = '계산 중…';
-      setTimeout(function () { compute(s); }, 30);
+      setTimeout(function () { if (isAll(s)) computeAll(s); else compute(s); }, 30);
+    });
+    var r1 = $('#runOne', main);
+    if (r1) r1.addEventListener('click', function () { compute(s); });
+    $$('[data-pgview]', main).forEach(function (b) {
+      b.addEventListener('click', function () { showPair(s, +b.getAttribute('data-pgview')); });
     });
     $$('[data-view]', main).forEach(function (b) {
       b.addEventListener('click', function () { s.view = b.getAttribute('data-view'); App.rerender(); });
@@ -327,6 +391,62 @@
   }
   function compute(s) {
     if (!s.A || !s.B) return;
+    s.res = computeRes(s);
+    s.sel = 0; s.tsel = 0;
+    syncSum(s);
+    App.rerender();
+  }
+  // 전체 페이지로 계산했으면 지금 보는 쪽의 요약을 새 결과로 바꿉니다(기준점 · 설정을 바꿔 다시 계산한 경우)
+  function syncSum(s) {
+    if (s.all && s.all.cur != null && s.res) { var o = s.all.sums[s.all.cur]; s.all.sums[s.all.cur] = summarize(o.pa, o.pb, s.res); }
+  }
+  function summarize(pa, pb, r) {
+    var mv = r.regions.filter(function (x) { return x.moved; }).length, add = r.regions.filter(function (x) { return x.type === '추가' && !x.moved; }).length;
+    return { pa: pa, pb: pb, add: add, del: r.regions.length - add - mv, moved: mv, text: r.text ? r.text.counts : null, align: r.alignText,
+      regions: r.regions.map(function (g) { return { no: g.no, type: g.type, x: g.x, y: g.y, w: g.w, h: g.h, area: g.area, moved: g.moved ? { dx: g.moved.dx, dy: g.moved.dy, far: g.moved.far } : null }; }),
+      texts: r.text ? r.text.list.map(function (d) { var t = d.b || d.a; return { no: d.no, type: d.type, a: d.a ? d.a.str : '', b: d.b ? d.b.str : '', x: Math.round(t.x), y: Math.round(t.y) }; }) : [] };
+  }
+  // 쪽 한 쌍의 그림 — PDF 는 이 창에 둔 원본에서 그 쪽을 다시 그리고, 그림 파일(한 장)은 지금 그림을 씁니다
+  function loadPair(s, pr) {
+    function one(k, pn) { var src = s['src' + k]; return src ? loadPdfPage(src.buf.slice(0), pn, src.name, s.opt.pdfSide) : Promise.resolve(s[k]); }
+    return Promise.all([one('A', pr[0]), one('B', pr[1])]);
+  }
+  // 전체 페이지: 쪽 쌍마다 차례로 그려 비교하고 요약만 남깁니다(그림은 한 쌍씩만 메모리에). 쪽마다 도곽 자동 정렬.
+  function computeAll(s) {
+    var pairs = pairsOf(s), sums = [], i = 0;
+    function next() {
+      if (i >= pairs.length) return finish();
+      var pr = pairs[i];
+      if (pr[0] == null || pr[1] == null) { sums.push({ pa: pr[0], pb: pr[1] }); i++; return next(); }
+      App.toast('전체 페이지 비교 중 — ' + (i + 1) + ' / ' + pairs.length + '쌍');
+      return loadPair(s, pr).then(function (ab) {
+        s.A = ab[0]; s.B = ab[1]; s.ptsA = []; s.ptsB = [];
+        sums.push(summarize(pr[0], pr[1], computeRes(s)));
+        s.res = null; i++;
+        return new Promise(function (ok) { setTimeout(ok, 20); }).then(next);
+      });
+    }
+    function finish() {
+      s.all = { sums: sums, cur: null };
+      var first = 0;
+      sums.some(function (x, j) { if (x.pa != null && x.pb != null && x.add + x.del + (x.text ? x.text.변경 + x.text.추가 + x.text.삭제 : 0) > 0) { first = j; return true; } return false; });
+      while (first < sums.length && (sums[first].pa == null || sums[first].pb == null)) first++;
+      if (first >= sums.length) { App.rerender(); return; }
+      App.toast('전체 ' + sums.length + '쌍을 비교했습니다. 차이가 있는 첫 쪽을 보여 줍니다.');
+      return showPair(s, first);
+    }
+    return next().catch(function (e) { App.toast('전체 페이지 비교를 끝내지 못했습니다: ' + (e.message || e)); App.rerender(); });
+  }
+  function showPair(s, idx) {
+    var x = s.all && s.all.sums[idx];
+    if (!x || x.pa == null || x.pb == null) return;
+    return loadPair(s, [x.pa, x.pb]).then(function (ab) {
+      s.A = ab[0]; s.B = ab[1]; s.ptsA = []; s.ptsB = []; s.picking = false;
+      s.all.cur = idx;
+      compute(s);
+    });
+  }
+  function computeRes(s) {
     var W = s.A.w, H = s.A.h, o = s.opt;
     var mA = L.binarize(s.A.canvas.getContext('2d').getImageData(0, 0, W, H).data, W, H, o.thr);
     var T = manualTransform(s), how;
@@ -368,10 +488,8 @@
       var inRoi = function (t) { return !roi || (t.x >= roi.x0 && t.x <= roi.x1 && t.y >= roi.y0 && t.y <= roi.y1); };
       text = L.textDiff(s.A.text.filter(inRoi), tb.filter(inRoi), { radius: 1.2, minRadius: 6 });
     }
-    s.res = { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, mv: mvx.mv || null, T: T, text: text, mode: mode, at: new Date(), cache: {},
+    return { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, mv: mvx.mv || null, T: T, text: text, mode: mode, at: new Date(), cache: {},
       alignText: how + ' — ' + tText(T) + shiftNote };
-    s.sel = 0; s.tsel = 0;
-    App.rerender();
   }
   // 차이 영역 + 이동 표시. 상자는 이동을 빼기 전 차이로 만들어(상자 수가 잘게 늘지 않게) 영역마다 이동 몫을 붙입니다.
   //  - 옮겨진 것 따로 보기(opt.moves, 2026-09-29 저녁 「문의02」): 멀리 옮겨진 선을 diff 에서 빼서 보라(res.mv)로 — logic.explainMoves
@@ -400,6 +518,7 @@
     r.regions = regionsFor(r.mA, r.mB, r.diff, r.W, r.H, o, !r.block, mvx);
     r.mv = mvx.mv || null;
     r.cache = {}; s.sel = 0;
+    syncSum(s);
     App.rerender();
   }
 
@@ -626,13 +745,24 @@
       tr.addEventListener('click', function () { var n = +tr.getAttribute('data-reg'); s.sel = s.sel === n ? 0 : n; s.tsel = 0; renderResult(s); });
     });
     $('#regXlsx', box).addEventListener('click', function () {
-      App.downloadXlsx('도면비교_차이목록', [{ name: '선 차이', rows: regionRows(s) }].concat(s.res.text ? [{ name: '글자 차이', rows: textRows(s) }] : []));
+      App.downloadXlsx('도면비교_차이목록', [{ name: '선 차이', rows: regionRows(s) }].concat(s.res.text ? [{ name: '글자 차이', rows: textRows(s) }] : [])
+        .concat(s.all ? [{ name: '쪽별 요약', rows: L.sheetPageSummary(s.all.sums, s.partA, s.partB) }, { name: '전체 쪽 차이', rows: allPageRows(s) }] : []));
     });
   }
   function regionRows(s) {
     var rows = [['A품번', s.partA, 'B품번', s.partB], ['번호', '구분', 'x', 'y', '가로', '세로', '면적(픽셀)']];
     rows[1].push('이동 몫(%)');
     s.res.regions.forEach(function (g) { rows.push([g.no, g.moved ? moveLabel(g) + (g.type === '추가' ? ' · B 옮긴 자리' : ' · A 원래 자리') : g.type === '추가' ? 'B에만(적색)' : 'A에만(파랑)', g.x, g.y, g.w, g.h, g.area, g.moved ? Math.round((g.moved.share || 1) * 100) : g.movedShare ? Math.round(g.movedShare * 100) : 0]); });
+    return rows;
+  }
+  // 전체 페이지 — 쪽마다의 선 · 글자 차이를 한 표로
+  function allPageRows(s) {
+    var rows = [['A 쪽', 'B 쪽', '종류', '번호', '구분', 'A (변경 전)', 'B (변경 후)', 'x', 'y', '가로', '세로']];
+    s.all.sums.forEach(function (x) {
+      if (x.pa == null || x.pb == null) { rows.push([x.pa == null ? '(없음)' : x.pa, x.pb == null ? '(없음)' : x.pb, '', '', x.pa == null ? 'A 에 없는 쪽' : 'B 에 없는 쪽']); return; }
+      x.regions.forEach(function (g) { rows.push([x.pa, x.pb, '선', g.no, g.moved ? '위치 이동 (' + g.moved.dx + ', ' + g.moved.dy + ')' : g.type === '추가' ? 'B에만(적색)' : 'A에만(파랑)', '', '', g.x, g.y, g.w, g.h]); });
+      x.texts.forEach(function (d) { rows.push([x.pa, x.pb, '글자', 'T' + d.no, d.type, d.a, d.b, d.x, d.y, '', '']); });
+    });
     return rows;
   }
   function textRows(s) {
@@ -883,7 +1013,8 @@
     var fig = null, figOpt = null;
     if (has) {
       fig = resultImage(s, 'side', 1240);
-      figOpt = { heightPx: fig.height, caption: '[도면 비교] A ' + (s.partA || s.A.name) + ' (변경 전) / B ' + (s.partB || s.B.name) + ' (변경 후) — 적색 = B에만, 파랑 = A에만. ' + resText(s.res) };
+      figOpt = { heightPx: fig.height, caption: '[도면 비교] A ' + (s.partA || s.A.name) + ' (변경 전) / B ' + (s.partB || s.B.name) + ' (변경 후) — 적색 = B에만, 파랑 = A에만. ' + resText(s.res) +
+        (s.all ? ' (전체 ' + s.all.sums.length + '쌍 중 A ' + (s.A.page || 1) + '쪽 · B ' + (s.B.page || 1) + '쪽 그림 — 쪽별 요약은 「9_도면비교」 시트)' : '') };
     }
     var r = L.ecnReport(e, today, { figure: figOpt });
     var wb = X.utils.book_new();
@@ -902,11 +1033,13 @@
       for (var i = 0; i < figRows; i++) aoa.push([]);
       aoa.push(['선 차이 목록']); regionRows(s).slice(1).forEach(function (x) { aoa.push(x); });
       if (s.res.text) { aoa.push([]); aoa.push(['글자 차이 목록']); textRows(s).forEach(function (x) { aoa.push(x); }); }
+      if (s.all) { aoa.push([]); aoa.push(['전체 페이지 — 쪽별 요약 (위 그림과 목록은 A ' + (s.A.page || 1) + '쪽 · B ' + (s.B.page || 1) + '쪽)']); L.sheetPageSummary(s.all.sums, s.partA, s.partB).slice(1).forEach(function (x) { aoa.push(x); }); }
       var ws2 = X.utils.aoa_to_sheet(aoa);
       ws2['!cols'] = [10, 14, 22, 22, 10, 10, 12].map(function (w) { return { wch: w }; });
       X.utils.book_append_sheet(wb, ws2, '9_도면비교');
       images.push({ sheet: 2, png: canvasBytes(big), col: 0, row: head.length, width: big.width, height: big.height, name: '도면 비교 겹쳐 보기' });
     }
+    if (has && s.all) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(allPageRows(s)), '9_전체쪽차이');
     if (s && s.bomRes) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(bomSheetRows(s)), 'BOM비교');
     if (e.id && L.findBy(db.ecns, e.id)) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(L.sheetMaterials(db, e.id)), '6_변경자재목록');
     var bytes = X.write(wb, { type: 'array', bookType: 'xlsx' });
@@ -992,7 +1125,7 @@
       var tt = text.map(function (x) { var p = L.applySimilarity(M, x); return { str: x.str, x: p.x, y: p.y, h: x.h * 0.96, w: x.w * 0.96, ang: 0 }; });
       return { canvas: c, w: SW, h: SH, name: '예시_HN-A0250_A_스캔.png', kind: 'pdf', text: tt };
     }
-    s.A = mk(false); s.B = mk(true, SAMPLE_M);
+    s.A = mk(false); s.B = mk(true, SAMPLE_M); s.srcA = null; s.srcB = null; s.all = null;
     s.partA = 'HN-A0231'; s.partB = 'HN-A0250'; s.sample = true;
     // 기준점 3쌍: 도면 테두리 왼쪽 위 · 오른쪽 아래, 표제란 왼쪽 위 (B 좌표는 스캔 변환을 적용한 값)
     var P = [{ x: 40, y: 40 }, { x: SW - 40, y: SH - 40 }, { x: 960, y: 700 }];

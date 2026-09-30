@@ -171,13 +171,17 @@
   }
   // CAV 표 · 전선 굵기 비교 (2026-09-30 오전 답 3). 등록할 때 PDF 글자에서 읽어 둔 표(d.cavTables)를 보여 줍니다.
   function cavCard(d) {
-    var ts = d.cavTables;
+    var ts = d.cavTables, pages = L.cavPages(ts || []), cp = App.ui.cavPage && App.ui.cavPage.id === d.id ? App.ui.cavPage.page : 'all';
     if (!ts) return '<p class="small muted" style="margin-top:14px">CAV 표: 읽은 기록이 없습니다(예시 도면이거나 CAV 표 읽기 전에 등록한 도면). PDF 로 다시 등록하면 읽습니다.</p>';
-    var cav = ts.filter(function (t) { return t.kind === 'cav'; }), wl = ts.filter(function (t) { return t.kind === 'wires'; });
     if (!ts.length) return '<p class="small muted" style="margin-top:14px">CAV 표: 읽은 표가 없습니다(글자 정보가 없는 PDF 이거나 CAV · CSA 머리가 없는 도면). BOM 구성에서 사용 핀·굵기를 직접 넣을 수 있습니다.</p>';
-    var gs = App.db.gaSq || {}, gc = L.gaugeCheck(ts, gs);
+    // 여러 쪽에 표가 있으면 쪽 고르기 + 「전체 페이지」(기본) — 전체면 모든 쪽의 표를 함께 읽고 쪽을 넘어 굵기를 비교합니다
+    var shown = L.tablesOnPage(ts, cp);
+    var cav = shown.filter(function (t) { return t.kind === 'cav'; }), wl = shown.filter(function (t) { return t.kind === 'wires'; });
+    var gs = App.db.gaSq || {}, gc = L.gaugeCheck(shown, gs);
     function sq(t, g) { var v = L.gaugeValue(g, t.gaugeHead, gs); return v && v.sq != null ? String(Math.round(v.sq * 1000) / 1000) : ''; }
     var h = '<h3 style="margin-top:16px">CAV 표 · 전선 굵기 <span class="small muted">— PDF 글자에서 읽음</span></h3>' +
+      (pages.length > 1 ? '<label class="small">쪽 <select id="cavPage" style="width:auto;min-height:32px"><option value="all"' + (cp === 'all' ? ' selected' : '') + '>전체 페이지 (' + pages.length + '개 쪽)</option>' +
+        pages.map(function (p) { return '<option value="' + p + '"' + (String(cp) === String(p) ? ' selected' : '') + '>' + p + '쪽</option>'; }).join('') + '</select></label>' : '') +
       '<p class="small">커넥터 표 ' + cav.length + '개 · 전선표 ' + wl.length + '개. 같은 전선을 두 곳 이상에서 비교한 ' + gc.compared + '가닥 중 ' +
       (gc.mismatches.length ? '<strong class="src-missing">다른 곳 ' + gc.mismatches.length + '건</strong>' : '<strong>다른 곳 없음</strong>') + '.</p>';
     if (gc.mismatches.length) h += '<div class="warn-box small"><ul style="margin:0">' + gc.mismatches.map(function (m) {
@@ -228,6 +232,8 @@
       d.updatedAt = L.toDateTimeStr(new Date());
       d.updatedBy = App.db.settings.approver || '';
     }
+    var cps = $('#cavPage', main);
+    if (cps) cps.addEventListener('change', function () { App.ui.cavPage = { id: d.id, page: this.value === 'all' ? 'all' : +this.value }; App.rerender(); });
     form.addEventListener('submit', function (ev) { ev.preventDefault(); collect(); App.save(); App.toast('저장했습니다. 수정값은 다음 분석에 반영됩니다.'); App.rerender(); });
     var cd = $('#checkDone', main);
     if (cd) cd.addEventListener('click', function () {
@@ -374,23 +380,34 @@
   App.extractPdfText = extractPdfText;
   App.loadPdf = loadPdf;
 
+  // pageNo = 쪽 번호 | 'all'(전체 페이지 — 모든 쪽을 위에서 아래로 이어 그림, 2026-09-30 오후 답 ⑤)
+  var PREVIEW_ALL_MAX = 20;
   function renderPreview(id, pageNo) {
     var box = $('#preview'), sel = $('#pageSel');
     if (!box || !App.files[id]) return;
     loadPdf(App.files[id].slice(0)).then(function (pdf) {
       if (sel && !sel.options.length) {
         for (var i = 1; i <= pdf.numPages; i++) sel.add(new Option(i + ' / ' + pdf.numPages, i));
-        sel.onchange = function () { renderPreview(id, +sel.value); };
+        if (pdf.numPages > 1) sel.add(new Option('전체 페이지 (' + Math.min(pdf.numPages, PREVIEW_ALL_MAX) + '쪽)', 'all'));
+        sel.onchange = function () { renderPreview(id, sel.value === 'all' ? 'all' : +sel.value); };
       }
-      return pdf.getPage(pageNo).then(function (page) {
-        var vp0 = page.getViewport({ scale: 1 });
-        var scale = Math.min(2, Math.max(0.5, (box.clientWidth || 600) / vp0.width));
-        var vp = page.getViewport({ scale: scale });
-        var c = document.createElement('canvas');
-        c.width = vp.width; c.height = vp.height;
-        box.innerHTML = ''; box.appendChild(c);
-        return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      var list = [];
+      if (pageNo === 'all') for (var p = 1; p <= Math.min(pdf.numPages, PREVIEW_ALL_MAX); p++) list.push(p); else list.push(pageNo);
+      box.innerHTML = '';
+      var chain = Promise.resolve();
+      list.forEach(function (pn) {
+        chain = chain.then(function () { return pdf.getPage(pn); }).then(function (page) {
+          var vp0 = page.getViewport({ scale: 1 });
+          var scale = Math.min(2, Math.max(0.5, (box.clientWidth || 600) / vp0.width));
+          var vp = page.getViewport({ scale: scale });
+          var c = document.createElement('canvas');
+          c.width = vp.width; c.height = vp.height;
+          if (list.length > 1) { var cap = document.createElement('p'); cap.className = 'small muted preview-page'; cap.textContent = pn + ' / ' + pdf.numPages + '쪽'; box.appendChild(cap); }
+          box.appendChild(c);
+          return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+        });
       });
+      return chain;
     }).catch(function (e) { box.innerHTML = '<p class="small src-missing" style="padding:12px">미리보기를 그리지 못했습니다: ' + esc(e.message) + '</p>'; });
   }
 

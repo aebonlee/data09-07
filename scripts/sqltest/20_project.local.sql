@@ -127,6 +127,9 @@ begin
   perform public._assert_raises($q$update public.app_settings set ga_sq = '[]'$q$, '23514', 'ga_sq 는 객체');
   update public.drawing set cav_tables = '[{"kind":"cav","rows":[]}]' where drawing_id = 'DWG-0001';
   perform public._assert_raises($q$update public.drawing set cav_tables = '{}' where drawing_id = 'DWG-0001'$q$, '23514', 'cav_tables 는 배열');
+  update public.drawing set bom_picks = '{"HY":"HY-3P","HZ":""}', bom_match = '{"HX-4P":"HX-4M"}' where drawing_id = 'DWG-0001';
+  perform public._assert_raises($q$update public.drawing set bom_picks = '[]' where drawing_id = 'DWG-0001'$q$, '23514', 'bom_picks 는 객체');
+  perform public._assert_raises($q$update public.drawing set bom_match = '"x"' where drawing_id = 'DWG-0001'$q$, '23514', 'bom_match 는 객체');
   perform public._assert_raises($q$insert into public.housing_master (housing, item, csa_min, csa_max) values ('X', 'Z', 2, 1)$q$, '23514', '전선 굵기 범위는 min <= max');
   perform public._assert_raises($q$update public.drawing set title_items = '{}' where drawing_id = 'DWG-0001'$q$, '23514', 'title_items 는 배열');
 
