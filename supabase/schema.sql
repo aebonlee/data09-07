@@ -286,7 +286,7 @@ create table if not exists public.housing_master (
   kind        text not null default '',                              -- LOCK · 단자 · 씰 …
   qty         numeric not null default 1 check (qty >= 0),
   unit        text not null default 'EA',
-  basis       text not null default '하우징당' check (basis in ('하우징당', '회로당')),
+  basis       text not null default '하우징당',                          -- 하우징당 · 회로당 · 빈 자리당 (아래 CHECK)
   csa_text    text not null default '',                              -- 적용 전선 원문 '0.5~1.0'
   csa_min     numeric,
   csa_max     numeric,
@@ -295,9 +295,30 @@ create table if not exists public.housing_master (
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
   constraint housing_master_csa_range check (csa_min is null or csa_max is null or csa_min <= csa_max),
-  -- ⚠ upsert 시 onConflict: 'owner_id,housing,item'
-  constraint housing_master_owner_item_key unique (owner_id, housing, item)
+  constraint housing_master_owner_item_key unique (owner_id, housing, item)   -- 아래 ALTER 에서 (…, kind, pin_range, item) 으로 바꿈
 );
+-- 2026-09-30 오전 추가(회사 자재 DB 구조 · 쓰는 회로만 · 굵기별 단자) — 이미 만든 표에도 붙도록 ALTER … IF NOT EXISTS
+alter table public.housing_master add column if not exists pin_range text    not null default '';     -- 적용 핀(CAV) '2~7, 10' · '' = 모든 핀
+alter table public.housing_master add column if not exists slot      text    not null default '';     -- 같은 자리의 대안 후보 묶음(회사 DB 'TML|2~7')
+alter table public.housing_master add column if not exists optional  boolean not null default false;  -- 선택 자재(회사 DB required = 0)
+alter table public.housing_master drop constraint if exists housing_master_basis_check;
+alter table public.housing_master add constraint housing_master_basis_check check (basis in ('하우징당', '회로당', '빈 자리당'));
+-- 같은 단자가 핀 범위별로 여러 번 나오고, 같은 품번이 단자·더미로 함께 쓰이기도 합니다(회사 DB) → 구분·핀 범위까지 키에 넣음
+-- ⚠ upsert 시 onConflict: 'owner_id,housing,kind,pin_range,item'
+alter table public.housing_master drop constraint if exists housing_master_owner_item_key;
+alter table public.housing_master add constraint housing_master_owner_item_key unique (owner_id, housing, kind, pin_range, item);
+-- 하우징 정보(핀 수 · 짝 하우징 · 캡 · 사용 여부)와 GA→SQ 환산표, 마스터 이름은 사용자 설정에 둡니다
+alter table public.app_settings add column if not exists housing_master_name text  not null default '';
+alter table public.app_settings add column if not exists housing_info        jsonb not null default '{}'::jsonb;   -- ← db.housingInfo
+alter table public.app_settings add column if not exists ga_sq               jsonb not null default '{}'::jsonb;   -- ← db.gaSq
+alter table public.app_settings drop constraint if exists app_settings_housing_info_object;
+alter table public.app_settings add constraint app_settings_housing_info_object check (jsonb_typeof(housing_info) = 'object');
+alter table public.app_settings drop constraint if exists app_settings_ga_sq_object;
+alter table public.app_settings add constraint app_settings_ga_sq_object check (jsonb_typeof(ga_sq) = 'object');
+-- 도면에서 읽은 CAV 표 · 전선표(PDF 글자 정보가 있을 때)
+alter table public.drawing add column if not exists cav_tables jsonb not null default '[]'::jsonb;              -- ← drawings[].cavTables
+alter table public.drawing drop constraint if exists drawing_cav_tables_array;
+alter table public.drawing add constraint drawing_cav_tables_array check (jsonb_typeof(cav_tables) = 'array');
 
 -- ----------------------------------------------------------------------------
 -- 2. 함수 · 트리거 (search_path 고정)

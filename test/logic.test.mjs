@@ -585,4 +585,146 @@ test('BOM 적요 열은 늘 비교에서 뺌 — 기본값·직접 고른 열·�
   assert.ok(!L.sheetTableDiff(r, '품목코드')[0].some(h => /적요/.test(h)));
 });
 
+
+// ── 2026-09-30 오전 답 1~4 (하우징 마스터 실제 구조 · 쓰는 회로만 · CAV 표 굵기 · REV) ──
+// 회사 자재 DB 내보내기와 같은 시트·열 이름의 가상 표본(값은 모두 지어낸 것 — 실제 자재 DB 값 아님)
+console.log('회사 자재 DB 형식 · 쓰는 회로만 · CAV 표 (2026-09-30 오전 답)');
+const H = (cols, ...rows) => [cols, ...rows];
+const ERP = {
+  '목차': [['#', '시트명']],
+  'Item': H(['name', 'item_code', 'item_name', 'item_group'], ['T-S', 'T-S', 'T-S', 'X TML'], ['T-L', 'T-L', '단자 대', 'X TML'], ['LK-4', 'LK-4', 'LK-4', 'X LOCK']),
+  'hsg_detail': H(['name', 'company', 'hsg_item', 'no_pins', 'lock_sn', 'lock_add_sn', 'cap_sn', 'hsg_match_sn', 'opt_sn', 'use_hsg'],
+    ['A-HX-4P', '회사A', 'HX-4P', '4', 'LK-4', '', 'CP-1', 'HX-4M', '', '1'],
+    ['B-HX-4P', '회사B', 'HX-4P', '4', 'LK-9', '', '', '', '', '1'],
+    ['A-HY-3P', '회사A', 'HY-3P', '3', '', '', '', '', '', '1'],
+    ['A-HZ-2P', '회사A', 'HZ-2P', '2', '', '', '', '', '', '0']),
+  'hsg_pin_block': H(['name', 'idx', 'pin_range', 'block_type', 'sub_item', 'sub_remark', 'parent'],
+    ['b1', '1', '0', 'TML', 'T-S', '', 'A-HX-4P'], ['b2', '2', '0', 'TML', 'T-L', '', 'A-HX-4P'],
+    ['b3', '3', '0', 'SEAL', 'S-1', '', 'A-HX-4P'], ['b4', '4', '0', 'DUMMY', 'D-1', '', 'A-HX-4P'],
+    ['b5', '1', '0', 'TML', 'T-S', '', 'B-HX-4P']),
+  'hsg_pin': H(['name', 'pin_row', 'tml_gid', 'seal_gid', 'dummy_sn', 'parent'],
+    ['p1', '1', '7', '', '', 'A-HY-3P'], ['p2', '2', '7', '', '', 'A-HY-3P'], ['p3', '3', '8', '', 'D-2', 'A-HY-3P']),
+  'sub_group_id_item_link': H(['name', 'sub_group_item', 'parent'], ['l1', 'T-S', '7'], ['l2', 'T-P', '8']),
+  'hsg_cover': H(['name', 'cover_item', 'parent'], ['c1', 'CV-4', 'A-HX-4P']),
+  'hsg_etc_add_link_detail': H(['name', 'etc_add_item', 'qty', 'required', 'remark', 'parent'], ['e1', 'TB-1', '2', '1', '', 'A-HX-4P'], ['e2', 'OP-1', '1', '0', '도면 확인 후 기입', 'A-HX-4P']),
+  'tml_detail': H(['name', 'company', 'tml_item', 'sq_min', 'sq_max'], ['x1', '회사A', 'T-S', '0.50', '1.00'], ['x2', '회사A', 'T-L', '1.25', '2.00'], ['x3', '회사A', 'T-P', '0.30', '0.50']),
+  'seal_detail': H(['name', 'company', 'seal_item', 'sq_min', 'sq_max'], ['s1', '회사A', 'S-1', '0.50', '2.00']),
+  'ga_sq_conversion': H(['name', 'ga', 'sq'], ['GA-18', '18', '0.9']),
+  'sub_remark': H(['name', 'company', 'hsg_item', 'sub_item', 'sub_remark'], ['r1', '회사A', 'HX-4P', 'T-L', '큰 핀'])
+};
+test('회사 자재 DB: 시트 이름으로 알아보고, 회사별 하우징 → LOCK·커버·부가·단자(SQ 범위)·씰·더미 행', () => {
+  assert.equal(L.isErpMasterBook(Object.keys(ERP)), true);
+  assert.equal(L.isErpMasterBook(['Sheet1']), false);
+  assert.deepEqual(L.erpCompanies(ERP), { '회사A': 3, '회사B': 1 });
+  const p = L.parseErpMaster(ERP);                              // 하우징이 많은 회사A 가 기본
+  assert.equal(p.company, '회사A'); assert.equal(p.stats.housings, 3); assert.equal(p.stats.otherCompany, 1);
+  const hx = p.rows.filter(r => r.housing === 'HX-4P');
+  assert.deepEqual(hx.map(r => [r.kind, r.item, r.basis, r.csaText]), [
+    ['LOCK', 'LK-4', '하우징당', ''], ['커버', 'CV-4', '하우징당', ''], ['부가 자재', 'TB-1', '하우징당', ''], ['부가 자재', 'OP-1', '하우징당', ''],
+    ['단자', 'T-S', '회로당', '0.5~1'], ['단자', 'T-L', '회로당', '1.25~2'], ['씰', 'S-1', '회로당', '0.5~2'], ['더미(빈 자리)', 'D-1', '빈 자리당', '']]);
+  assert.equal(hx[3].optional, true); assert.equal(hx[2].qty, 2); assert.equal(hx[5].note, '큰 핀'); assert.equal(hx[5].name, '단자 대');
+  assert.deepEqual(p.info['HX-4P'], { pins: 4, series: '', cap: 'CP-1', match: 'HX-4M', opt: '', use: true });
+  // 블록이 없는 하우징은 hsg_pin + 단자 그룹 → 핀 범위로 묶음
+  assert.deepEqual(p.rows.filter(r => r.housing === 'HY-3P').map(r => [r.kind, r.item, r.pinRange]), [['단자', 'T-S', '1~2'], ['단자', 'T-P', '3'], ['더미(빈 자리)', 'D-2', '3']]);
+  assert.equal(p.info['HZ-2P'].use, false); assert.equal(p.stats.noChildren, 1);
+  assert.deepEqual(p.gaSq, { '18': 0.9 });
+  assert.equal(L.parseErpMaster(ERP, { company: '회사B' }).rows.length, 2);   // 회사B: LOCK + 단자(범위 없음)
+});
+test('BOM: 단자·씰은 쓰는 회로만, 굵기(SQ)별로 맞는 단자, 빈 자리는 더미, 선택 자재는 확인 표시', () => {
+  const p = L.parseErpMaster(ERP), o = { info: p.info, gaSq: p.gaSq };
+  const r = L.expandHousingBom([{ housing: 'HX-4P', count: 2, cavSpec: '1:0.5, 2:1.25, 4:18GA' }], p.rows, o);   // 4극 중 3자리 사용
+  const q = Object.fromEntries(r.map(x => [x.품목코드, x.수량]));
+  // 하우징 2곳 × (T-S: 0.5 · 18GA→0.9 = 2, T-L: 1.25 = 1, 씰 3, 더미 = 빈 자리 3번 1개)
+  assert.deepEqual(q, { 'HX-4P': 2, 'LK-4': 2, 'CV-4': 2, 'TB-1': 4, 'OP-1': 2, 'T-S': 4, 'T-L': 2, 'S-1': 6, 'D-1': 2 });
+  assert.ok(/선택 자재/.test(r.find(x => x.품목코드 === 'OP-1').확인));
+  assert.ok(/SQ 0.5×2, 0.9×2/.test(r.find(x => x.품목코드 === 'T-S').근거));
+  // 굵기에 맞는 단자가 없으면 「맞는 단자 없음」 행 + 확인
+  const n = L.expandHousingBom([{ housing: 'HX-4P', count: 1, cavSpec: '1:5' }], p.rows, o);
+  assert.ok(n.some(x => x.품목코드 === '(맞는 단자 없음)' && /SQ 5 에 맞는 단자/.test(x.확인)));
+  // 핀 범위가 나뉜 하우징: 1~2번 = T-S, 3번 = T-P / 3번을 안 쓰면 더미
+  const y = L.expandHousingBom([{ housing: 'HY-3P', count: 1, cavSpec: '1:0.5, 3:0.3' }], p.rows, o);
+  assert.deepEqual(y.map(x => [x.품목코드, x.수량]), [['HY-3P', 1], ['T-S', 1], ['T-P', 1]]);
+  const y2 = L.expandHousingBom([{ housing: 'HY-3P', count: 1, cavSpec: '1:0.5, 2:0.5' }], p.rows, o);
+  assert.deepEqual(y2.map(x => [x.품목코드, x.수량]), [['HY-3P', 1], ['T-S', 2], ['D-2', 1]]);
+  // 사용 안 함 하우징은 확인 표시
+  assert.ok(/사용 안 함|딸린 자재가 없습니다/.test(L.expandHousingBom([{ housing: 'HZ-2P', count: 1 }], p.rows, o)[0].확인));
+});
+test('도구 양식도 그대로: 적용 핀(CAV) 열 · 빈 자리당 기준을 읽음', () => {
+  const p = L.parseHousingMaster([['하우징 품번', '자재 품번', '구분', '수량 기준', '적용 전선(SQ)', '핀 수', '적용 핀(CAV)'],
+    ['CN-9', 'TA', '단자', '', '0.5~1.0', 3, '1~2'], ['', 'TB', '단자', '', '', '', '3'], ['', 'DM', '더미', '', '', '', '']]);
+  assert.deepEqual(p.rows.map(r => [r.item, r.basis, r.pinRange, r.pins]), [['TA', '회로당', '1~2', 3], ['TB', '회로당', '3', null], ['DM', '빈 자리당', '', null]]);
+  const r = L.expandHousingBom([{ housing: 'CN-9', count: 1, cavSpec: '2:0.75, 3' }], p.rows);
+  assert.deepEqual(r.map(x => [x.품목코드, x.수량]), [['CN-9', 1], ['TA', 1], ['TB', 1], ['DM', 1]]);
+});
+test('굵기 범위가 겹치는 후보: 회로마다 범위가 가장 좁은 것 하나만', () => {
+  const m = L.parseHousingMaster([['하우징 품번', '자재 품번', '구분', '적용 전선(SQ)'], ['CN-7', 'TA', '단자', '0.5~1.0'], ['', 'TW', '단자', '0.5~2.0']]).rows;
+  const r = L.expandHousingBom([{ housing: 'CN-7', count: 1, cavSpec: '1:0.75, 2:1.5, 3:0.5' }], m);
+  assert.deepEqual(r.map(x => [x.품목코드, x.수량]), [['CN-7', 1], ['TA', 2], ['TW', 1]]);
+});
+test('핀 범위 · 굵기 값 읽기', () => {
+  assert.equal(L.pinRangeHas('0', 7), true); assert.equal(L.pinRangeHas('2~7, 10~15', 11), true); assert.equal(L.pinRangeHas('2~7, 10~15', 8), false);
+  assert.equal(L.compactPins([5, 1, 2, 3, 9, 10]), '1~3, 5, 9~10');
+  assert.equal(L.gaugeValue('18GA').sq, 0.85); assert.equal(L.gaugeValue('18GA', '', { '18': 0.9 }).sq, 0.9);
+  assert.equal(L.gaugeValue('18', 'GA').awg, '18'); assert.equal(L.gaugeValue('0.5SQ', 'CSA').sq, 0.5); assert.equal(L.gaugeValue('1.25', 'CSA').sq, 1.25);
+  assert.equal(L.gaugeValue(''), null);
+  assert.deepEqual(L.parseCavSpec('1:0.5, 3~4:18GA, 6').map(c => c.cav + '=' + c.gauge), ['1=0.5', '3=18GA', '4=18GA', '6=']);
+});
+// CAV 표 가상 도면 조각 — 두산 도면처럼 커넥터 표 둘이 나란히, 아래에 전선표
+function cell(str, x, y) { return { str, x, y, w: str.length * 5, h: 8 }; }
+function cavTable(x0, name, hsg, rows) {
+  const out = [cell('-' + name, x0, 40), cell(hsg, x0, 52), cell('MAKER', x0 + 70, 52),
+    cell('PIN', x0, 64), cell('CORE', x0 + 20, 64), cell('GA', x0 + 52, 64), cell('COLOR', x0 + 76, 64)];
+  rows.forEach((r, i) => { const y = 75 + i * 11; out.push(cell(r[0], x0 + 4, y)); if (r[1]) out.push(cell(r[1], x0 + 24, y), cell(r[2], x0 + 48, y), cell('BK', x0 + 80, y)); });
+  return out;
+}
+const DWG = [
+  ...cavTable(500, 'AIRCON', 'HX-4P', [['1', '13C', '18GA'], ['2', '9D', '16GA'], ['3'], ['4', '1C', '16GA']]),
+  ...cavTable(620, 'COND', 'HX-4P', [['1', '13B', '18GA'], ['2', '35', '14GA'], ['3'], ['4', '1A', '14GA']]),
+  cell('87', 624, 130), cell('2', 624, 141),                                   // 표 아래 다른 그림의 숫자(줄 간격이 벌어짐 — 표로 읽으면 안 됨)
+  cell('NO', 40, 300), cell('CORE', 70, 300), cell('GA', 110, 300), cell('FROM', 160, 300), cell('TO', 220, 300),
+  cell('1', 44, 311), cell('1A', 72, 311), cell('14GA', 106, 311), cell('S1', 165, 311), cell('COND(4)', 215, 311),
+  cell('2', 44, 322), cell('13C', 72, 322), cell('18GA', 106, 322), cell('S2', 165, 322), cell('AIRCON(1)', 215, 322),
+  cell('A', 18, 316)                                                           // 도면 테두리의 구역 글자
+];
+test('CAV 표 읽기: 나란한 표를 나누고, 커넥터 이름·하우징·빈 자리, 아래 다른 숫자는 안 읽음, 전선표', () => {
+  const ts = L.parseWireTables(DWG);
+  const cav = ts.filter(t => t.kind === 'cav');
+  assert.deepEqual(cav.map(t => [t.name, t.housing, t.maker, t.rows.length]), [['AIRCON', 'HX-4P', 'MAKER', 4], ['COND', 'HX-4P', 'MAKER', 4]]);
+  assert.deepEqual(cav[0].rows[2], { cav: '3', wire: '', gauge: '', color: '' });
+  assert.deepEqual(cav[1].rows[3], { cav: '4', wire: '1A', gauge: '14GA', color: 'BK' });
+  const wl = ts.filter(t => t.kind === 'wires');
+  assert.equal(wl.length, 1); assert.deepEqual(wl[0].rows.map(r => [r.no, r.wire, r.to]), [['1', '1A', 'COND(4)'], ['2', '13C', 'AIRCON(1)']]);
+  // CAV · WIRE · CSA 머리도 같은 방식
+  const hd = [cell('CAV', 10, 10), cell('WIRE', 40, 10), cell('CSA', 80, 10), cell('1', 12, 21), cell('W01', 40, 21), cell('0.5', 82, 21), cell('2', 12, 32), cell('W02', 40, 32), cell('0.85', 82, 32)];
+  assert.deepEqual(L.parseWireTables(hd)[0].rows.map(r => r.cav + ':' + r.gauge), ['1:0.5', '2:0.85']);
+  assert.deepEqual(L.parseWireTables([cell('GA', 10, 10), cell('0.5', 12, 21)]), []);   // 굵기 머리 하나뿐이면 표가 아님
+});
+test('굵기 비교: 같은 전선이 다른 곳에서 다른 굵기면 알림, 전선표 FROM·TO 의 자리와 전선 번호 대조', () => {
+  let gc = L.gaugeCheck(L.parseWireTables(DWG));
+  assert.equal(gc.cavTables, 2); assert.equal(gc.wireTables, 1); assert.equal(gc.compared, 2); assert.deepEqual(gc.mismatches, []);
+  const bad = DWG.map(t => t.str === '14GA' && t.x > 600 && t.y === 108 ? Object.assign({}, t, { str: '16GA' }) : t.str === '13C' && t.x < 100 ? Object.assign({}, t, { str: '13Z' }) : t);
+  gc = L.gaugeCheck(L.parseWireTables(bad));
+  assert.deepEqual(gc.mismatches.map(m => m.kind + ' ' + m.wire), ['전선 번호 다름 13Z', '굵기 다름 1A']);
+  assert.deepEqual(gc.mismatches[1].entries.map(e => e.value), ['16GA', '14GA']);
+});
+test('CAV 표 → BOM: 표 하나 = 커넥터 하나, 표의 쓰는 핀·굵기로 단자, 마스터에 없는 품번은 비슷한 품번 안내', () => {
+  const p = L.parseErpMaster(ERP);
+  const tables = L.parseWireTables(DWG).concat([{ kind: 'cav', name: 'X', housing: 'HY', gaugeHead: 'GA', rows: [{ cav: '1', wire: 'a', gauge: '18' }] }]);
+  const hc = L.housingsFromCavTables(tables, p.rows, p.info);
+  assert.deepEqual(hc.found.map(f => [f.housing, f.count, f.from]), [['HX-4P', 2, 'CAV 표']]);
+  assert.deepEqual(hc.missing, [{ name: 'X', housing: 'HY', near: ['HY-3P'] }]);
+  const r = L.expandHousingBom(hc.found, p.rows, { info: p.info, gaSq: p.gaSq });
+  const q = Object.fromEntries(r.map(x => [x.품목코드, x.수량]));
+  // AIRCON 18·16·16GA, COND 18·14·14GA → T-S(0.5~1): 18GA(0.9) ×2, T-L(1.25~2): 16GA(1.25)×2 + 14GA(2)×2 = 4, 씰 6, 더미 2
+  assert.deepEqual([q['HX-4P'], q['T-S'], q['T-L'], q['S-1'], q['D-1']], [2, 2, 4, 6, 2]);
+});
+test('REV: 품번 끝 영문 1자 = REV, 없으면 빈 칸(사용자 입력) · 사용처는 자동으로 채우지 않음', () => {
+  assert.equal(L.revFromPartNo('999999-12345A'), 'A'); assert.equal(L.revFromPartNo('999999-12345'), ''); assert.equal(L.revFromPartNo('HN-A0231'), '');
+  const t = [{ str: 'NO.', x: 700, y: 600, w: 12, h: 5 }, { str: '999999-00002B', x: 720, y: 600, w: 60, h: 9 }];
+  let r = L.extractFromPdf('APPLY: MAIN', t, 1000, 700, 'x.pdf');
+  assert.deepEqual([r.fields.partNo, r.fields.rev, r.source.rev, r.fields.usage], ['999999-00002B', 'B', 'guess', undefined]);
+  r = L.extractFromPdf('', [], 0, 0, '999999-12345_0001.pdf');
+  assert.equal(r.fields.rev, undefined); assert.ok(r.missing.indexOf('rev') >= 0 && r.missing.indexOf('usage') >= 0);
+});
+
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));

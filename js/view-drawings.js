@@ -157,8 +157,8 @@
     return '<div class="page-head"><h3 style="margin:0">추출정보 편집</h3><span class="small muted">모든 값 수정 가능</span></div>' +
       (miss.length ? '<div class="warn-box small">미인식 항목 ' + miss.length + '건: ' + esc(miss.map(function (k) { return L.FIELD_LABEL[k]; }).join(', ')) + ' — 직접 입력한 뒤 저장하면 분석에 반영됩니다.</div>' : '') +
       dupWarn(d) + checkBox(d) + bomHint(d) +
-      '<form id="editForm"><div class="form-grid">' + f('partNo') + f('rev') + f('customer') + f('model') + f('partName') +
-      f('usage', '예: ' + usages.join(', ')) + f('dwgDate', 'YYYY-MM-DD') +
+      '<form id="editForm"><div class="form-grid">' + f('partNo') + f('rev', '품번 끝 영문이 없으면 직접 입력') + f('customer') + f('model') + f('partName') +
+      f('usage', '도면에 적혀 있지 않음 — 직접 입력 (예: ' + usages.join(', ') + ')') + f('dwgDate', 'YYYY-MM-DD') +
       '</div><h3 style="margin-top:14px">추출 특징</h3><div class="form-grid">' +
       '<div class="wide">' + f('connectors', '쉼표로 구분 — 예: CN-0221, CN-0118') + '</div>' +
       f('circuits', '', 'number') + f('branches', '', 'number') +
@@ -167,7 +167,30 @@
       '</div><p class="small muted" style="margin-top:8px">도면 ID ' + esc(d.id) + ' · 등록일 ' + esc(d.regDate || '') + ' · ' + esc(d.source || 'PDF') + '</p>' +
       '<div class="actions"><button type="submit" class="btn">저장</button>' +
       '<button type="button" class="btn btn-primary" id="goSimilar">유사도 분석 시작 →</button>' +
-      '<button type="button" class="btn btn-danger btn-sm" id="delDrawing">도면 삭제</button></div></form>';
+      '<button type="button" class="btn btn-danger btn-sm" id="delDrawing">도면 삭제</button></div></form>' + cavCard(d);
+  }
+  // CAV 표 · 전선 굵기 비교 (2026-09-30 오전 답 3). 등록할 때 PDF 글자에서 읽어 둔 표(d.cavTables)를 보여 줍니다.
+  function cavCard(d) {
+    var ts = d.cavTables;
+    if (!ts) return '<p class="small muted" style="margin-top:14px">CAV 표: 읽은 기록이 없습니다(예시 도면이거나 CAV 표 읽기 전에 등록한 도면). PDF 로 다시 등록하면 읽습니다.</p>';
+    var cav = ts.filter(function (t) { return t.kind === 'cav'; }), wl = ts.filter(function (t) { return t.kind === 'wires'; });
+    if (!ts.length) return '<p class="small muted" style="margin-top:14px">CAV 표: 읽은 표가 없습니다(글자 정보가 없는 PDF 이거나 CAV · CSA 머리가 없는 도면). BOM 구성에서 사용 핀·굵기를 직접 넣을 수 있습니다.</p>';
+    var gs = App.db.gaSq || {}, gc = L.gaugeCheck(ts, gs);
+    function sq(t, g) { var v = L.gaugeValue(g, t.gaugeHead, gs); return v && v.sq != null ? String(Math.round(v.sq * 1000) / 1000) : ''; }
+    var h = '<h3 style="margin-top:16px">CAV 표 · 전선 굵기 <span class="small muted">— PDF 글자에서 읽음</span></h3>' +
+      '<p class="small">커넥터 표 ' + cav.length + '개 · 전선표 ' + wl.length + '개. 같은 전선을 두 곳 이상에서 비교한 ' + gc.compared + '가닥 중 ' +
+      (gc.mismatches.length ? '<strong class="src-missing">다른 곳 ' + gc.mismatches.length + '건</strong>' : '<strong>다른 곳 없음</strong>') + '.</p>';
+    if (gc.mismatches.length) h += '<div class="warn-box small"><ul style="margin:0">' + gc.mismatches.map(function (m) {
+      return '<li>' + esc(m.kind) + (m.wire ? ' — 전선 ' + esc(m.wire) : '') + ': ' + m.entries.map(function (e) { return esc(e.where) + ' <strong>' + esc(e.value) + '</strong>'; }).join(' · ') + '</li>';
+    }).join('') + '</ul></div>';
+    h += '<details class="small"><summary>읽은 커넥터 표 ' + cav.length + '개 보기</summary>' + App.table([
+      { label: '커넥터', render: function (t) { return esc(t.name || '—'); } },
+      { label: '하우징 품번', render: function (t) { return esc(t.housing || '') + (t.maker ? ' <span class="muted">' + esc(t.maker) + '</span>' : ''); } },
+      { label: '쓰는 자리 / 표의 자리', render: function (t) { return t.rows.filter(function (r) { return r.wire || r.gauge; }).length + ' / ' + t.rows.length; } },
+      { label: '핀 · 전선 · 굵기(SQ)', render: function (t) { return esc(t.rows.map(function (r) { return r.cav + (r.wire || r.gauge ? ':' + (r.wire || '?') + ' ' + r.gauge + (sq(t, r.gauge) && !/^\d+(\.\d+)?$/.test(r.gauge) ? '(' + sq(t, r.gauge) + ')' : '') : ':빈 자리'); }).join(', ')); } },
+      { label: '쪽', key: 'page' }
+    ], cav) + '<p class="muted">GA 는 ' + (Object.keys(gs).length ? '회사 환산표(자재 DB 의 GA/SQ 환산)' : '일반 환산값(가정 — 회사 자재 DB 를 BOM 구성에서 불러오면 그 환산표를 씀)') + '로 SQ 로 바꿉니다.</p></details>';
+    return h;
   }
   // 올릴 때 자동으로 읽어 저장한 값의 확인 안내(2026-09-29 저녁 「문의04」).
   // 저장은 이미 되어 있고, 사람이 한 번 보고 「확인 완료」를 누르면 확인 일시·확인자를 남깁니다.
@@ -183,7 +206,7 @@
   function bomHint(d) {
     var m = App.db.housingMaster || [];
     if (!m.length) return '';
-    var f = L.findHousings(d.rawText || '', d.connectors || '', m);
+    var f = L.findHousings(d.rawText || '', d.connectors || '', m, App.db.housingInfo);
     return '<p class="small">' + (f.length ? '하우징 ' + f.length + '종(' + esc(f.map(function (x) { return x.housing + ' ×' + x.count; }).join(', ')) + ')을 찾았습니다. ' : '마스터에 있는 하우징을 이 도면 글자에서 찾지 못했습니다. ') +
       '<a href="#/bom?d=' + d.id + '">BOM 구성 →</a></p>';
   }
@@ -293,13 +316,16 @@
             titleItems: L.titleRegionItems(res.items, res.pw, res.ph).slice(0, 300), pageSize: [res.pw, res.ph]
           };
           if (dup.length) d.versionOf = dup[0].id;
+          // CAV 표(CAV · WIRE · CSA / PIN · CORE · GA)와 전선표 — 글자 정보가 있는 PDF 만(2026-09-30 답 3)
+          d.cavTables = tl.has ? L.parseWireTablesPages(res.pageItems || []) : [];
           applyExtraction(d, ex, false);
           db.drawings.push(d);
           App.files[d.id] = buf;
           var miss = L.missingFields(d).length;
           var scan = !tl.has;   // 글자 정보 판정은 도면 비교와 같은 기준(logic.textLayerInfo)
           var tbn = Object.keys(ex.title || {}).length;
-          return { id: d.id, msg: file.name + ' — ' + d.id + ' 자동 저장 · ' + (tbn ? '제목란에서 ' + tbn + '칸 읽음 · ' : '') +
+          var ncav = (d.cavTables || []).filter(function (t) { return t.kind === 'cav'; }).length;
+          return { id: d.id, msg: file.name + ' — ' + d.id + ' 자동 저장 · ' + (tbn ? '제목란에서 ' + tbn + '칸 읽음 · ' : '') + (ncav ? 'CAV 표 ' + ncav + '개 읽음 · ' : '') +
             (scan ? '글자 정보가 없는 PDF(글자를 선으로 그림)라 파일명에서만 읽었습니다. 나머지는 미리보기를 보고 입력해 주세요.' : (miss ? '확인 필요 ' + miss + '건' : '추출 완료')) + (dup.length ? ' · 신규 버전으로 등록' : '') };
         });
       }, function (err) {
@@ -330,15 +356,15 @@
             var s = '';
             tc.items.forEach(function (it) { s += it.str + (it.hasEOL ? '\n' : ' '); });
             texts.push(s.replace(/[ \t]+/g, ' ').trim());
-            // 1쪽은 글자 위치도 둡니다(제목란 읽기). y 는 위에서부터 잰 글자 밑줄, h 는 글자 높이
-            if (p === 1) {
-              var vp = pg.getViewport({ scale: 1 });
-              out.pw = vp.width; out.ph = vp.height;
-              out.items = tc.items.filter(function (it) { return it.str && it.str.trim(); }).map(function (it) {
-                var t = it.transform;
-                return { str: it.str, x: Math.round(t[4] * 10) / 10, y: Math.round((vp.height - t[5]) * 10) / 10, w: Math.round((it.width || 0) * 10) / 10, h: Math.round(Math.sqrt(t[2] * t[2] + t[3] * t[3]) * 10) / 10 };
-              });
-            }
+            // 글자 위치(y 는 위에서부터 잰 글자 밑줄, h 는 글자 높이). 1쪽은 제목란 읽기, 모든 쪽은 CAV 표 읽기(2026-09-30)에 씁니다
+            var vp = pg.getViewport({ scale: 1 });
+            var its = tc.items.filter(function (it) { return it.str && it.str.trim(); }).map(function (it) {
+              var t = it.transform;
+              return { str: it.str, x: Math.round(t[4] * 10) / 10, y: Math.round((vp.height - t[5]) * 10) / 10, w: Math.round((it.width || 0) * 10) / 10, h: Math.round(Math.sqrt(t[2] * t[2] + t[3] * t[3]) * 10) / 10 };
+            });
+            out.pageItems = out.pageItems || [];
+            out.pageItems.push({ items: its });
+            if (p === 1) { out.pw = vp.width; out.ph = vp.height; out.items = its; }
           });
         })(i);
       }

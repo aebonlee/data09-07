@@ -52,7 +52,7 @@
   }
 
   function emptyDb() {
-    return { drawings: [], groups: [], decisions: [], ecns: [], housingMaster: [], settings: defaultSettings() };
+    return { drawings: [], groups: [], decisions: [], ecns: [], housingMaster: [], housingMasterName: '', housingInfo: {}, gaSq: {}, settings: defaultSettings() };
   }
 
   // ── 공통 ─────────────────────────────────────────────────
@@ -1707,6 +1707,14 @@
     return out;
   }
 
+  // 품번 끝 영문 1자 = REV (2026-09-30 오전 답 4 — CASE1 「999999-12345A 에서 A 가 REV」).
+  // 끝이 숫자인 품번(영문이 붙지 않는 품번)은 REV 를 알 수 없으므로 빈 칸 — 사용자가 입력합니다.
+  // 품번이 통째로 바뀌는 개정(CASE2)·전혀 다른 곳에 쓰는 경우(CASE3)는 품번 모양으로 가릴 수 없어 사람이 판단합니다.
+  function revFromPartNo(partNo) {
+    var m = String(partNo || '').trim().match(/^(?=.*\d.*\d.*\d)(.*\d)([A-Z])$/i);
+    return m ? m[2].toUpperCase() : '';
+  }
+
   // PDF 한 건에서 도면 정보 뽑기: 제목란(위치) > 글자 라벨(extractFields) > 파일명 순서로 채웁니다.
   // 돌려주는 source: title = 제목란, auto = 글자 라벨, file = 파일명, guess = 추정.
   function extractFromPdf(text, items, pw, ph, fileName, settings) {
@@ -1730,12 +1738,18 @@
     Object.keys(fn).forEach(function (k) {
       if (isBlank(f[k])) { f[k] = fn[k]; src[k] = k === 'partNo' ? 'file' : 'guess'; }
     });
+    // REV 가 제목란·파일명 어디에도 없으면 품번 끝 영문 1자(2026-09-30 답 4). 그것도 없으면 빈 칸 = 사용자 입력.
+    if (isBlank(f.rev) && revFromPartNo(f.partNo)) { f.rev = revFromPartNo(f.partNo); src.rev = 'guess'; }
+    // 사용처는 도면에 적혀 있지 않습니다(같은 답) — 자동으로 채우지 않고 사용자가 입력합니다.
+    delete f.usage; delete src.usage;
     return { fields: f, source: src, missing: missingFields(f), title: tb };
   }
 
-  // ── 하우징 → ASSY 자재 BOM 구성 (2026-09-29 저녁 「문의03」) ──────────
+  // ── 하우징 → ASSY 자재 BOM 구성 (2026-09-29 저녁 「문의03」 · 2026-09-30 오전 답 1~3) ──────────
   // 마스터 표(하우징 품번 → 딸린 자재·수량)는 회사 자료라 도구에 들어 있지 않습니다. 사용자가 엑셀·CSV 로 불러옵니다.
-  // 열 이름은 아래 낱말로 찾습니다(실제 양식 확인 전 가정 — 기획서 11.2).
+  // 두 가지 형식을 받습니다.
+  //  ① 도구 양식(한 줄 = 하우징 하나에 딸린 자재 하나) — 아래 낱말로 열을 찾습니다(parseHousingMaster).
+  //  ② 회사 자재 DB 내보내기(시트 hsg_detail · hsg_pin_block · tml_detail … — 2026-09-30 수강생이 보낸 실제 구조, parseErpMaster).
   var HM_HEAD = {
     housing: /하우징|HOUSING|커넥터\s*품번|CONNECTOR/i,
     item: /자재\s*(?:품번|코드|번호)|구성\s*(?:품번|자재)|하위\s*품번|품목\s*코드|CHILD|COMPONENT|ASSY\s*자재|^\s*품번\s*$|PART\s*NO/i,
@@ -1745,6 +1759,7 @@
     unit: /단위|UNIT/i,
     basis: /기준|BASIS|PER/i,
     csa: /전선|CSA|SQ|굵기|WIRE|AWG/i,
+    pinRange: /적용\s*핀|핀\s*범위|사용\s*핀|CAV\s*범위|PIN\s*RANGE/i,
     pins: /핀\s*수|극\s*수|CAVITY|CAV|PINS?/i,
     note: /비고|NOTE|REMARK|적요/i
   };
@@ -1756,11 +1771,14 @@
     var n = toNum(s);
     return n == null ? null : { min: n, max: n };
   }
-  // 「회로당」 = 사용하는 회로(전선) 하나에 하나씩 드는 자재(단자·씰), 「하우징당」 = 하우징 하나에 정해진 수(LOCK·캡)
+  // 「회로당」 = 쓰는 회로(전선) 하나에 하나씩 드는 자재(단자·씰), 「하우징당」 = 하우징 하나에 정해진 수(LOCK·캡),
+  // 「빈 자리당」 = 하우징에서 쓰지 않는 자리(CAV) 하나에 하나씩 막는 자재(더미 플러그) — 2026-09-30 회사 DB 의 DUMMY
   function basisOf(v, kind) {
     var s = String(v || '') + ' ' + String(kind || '');
+    if (/빈\s*자리|DUMMY|더미|미사용/i.test(String(v || ''))) return '빈 자리당';
     if (/회로|핀|CAV|CIRCUIT|PIN|WIRE|전선/i.test(String(v || ''))) return '회로당';
     if (/하우징|HOUSING|EA|개당/i.test(String(v || ''))) return '하우징당';
+    if (/더미|DUMMY|빈\s*자리/i.test(s)) return '빈 자리당';
     return /단자|TERMINAL|CONTACT|SOCKET|PIN|씰|SEAL/i.test(s) ? '회로당' : '하우징당';
   }
   // 2차원 배열(엑셀 시트) → 마스터 행. 머리행은 위 10행 안에서 「하우징」 열과 「자재」 열이 함께 있는 행.
@@ -1776,7 +1794,8 @@
           if (c[k] != null) return;
           if (k === 'item' && HM_HEAD.housing.test(hd)) return;   // 「하우징 품번」 을 자재 열로 잡지 않게
           if (k === 'name' && (HM_HEAD.housing.test(hd) || HM_HEAD.item.test(hd) && !/명/.test(hd))) return;
-          if (k === 'pins' && HM_HEAD.csa.test(hd)) return;
+          if (k === 'pins' && (HM_HEAD.csa.test(hd) || HM_HEAD.pinRange.test(hd))) return;
+          if (k === 'csa' && HM_HEAD.pinRange.test(hd)) return;
           if (HM_HEAD[k].test(hd)) c[k] = i;
         });
       });
@@ -1793,15 +1812,380 @@
       var q = toNum(g('qty')), rg = csaRange(g('csa'));
       out.push({ housing: norm(hs), item: item, name: g('name'), kind: g('kind'), qty: q == null ? 1 : q, unit: g('unit') || 'EA',
         basis: basisOf(g('basis'), g('kind') + ' ' + g('name')), csaText: g('csa'), csaMin: rg ? rg.min : null, csaMax: rg ? rg.max : null,
-        pins: toNum(g('pins')), note: g('note') });
+        pins: toNum(g('pins')), note: g('note'), pinRange: pinRangeText(g('pinRange')), slot: '', optional: false });
     });
     return { rows: out, headerRow: hi + 1, columns: Object.keys(col) };
   }
+
+  // ── 핀(CAV) 범위 ── 회사 DB 표기: '0' = 모든 핀, '2~7, 10~15, 17' = 그 핀들만
+  function pinRangeText(v) {
+    var s = String(v == null ? '' : v).trim();
+    return !s || s === '0' || /^(?:ALL|전체)$/i.test(s) ? '' : s;
+  }
+  function pinRangeList(range) {
+    var s = pinRangeText(range), out = [];
+    if (!s) return null;
+    s.split(/[,;]/).forEach(function (t) {
+      t = t.trim();
+      var m = t.match(/^(\d+)\s*(?:~|-|–)\s*(\d+)$/);
+      if (m) out.push([+m[1], +m[2]]);
+      else if (/^\d+$/.test(t)) out.push([+t, +t]);
+      else if (t) out.push(t.toUpperCase());
+    });
+    return out.length ? out : null;
+  }
+  function pinRangeHas(range, cav) {
+    var list = pinRangeList(range);
+    if (!list) return true;
+    var n = /^\d+$/.test(String(cav == null ? '' : cav).trim()) ? +String(cav).trim() : null;
+    return list.some(function (r) { return typeof r === 'string' ? r === String(cav).trim().toUpperCase() : n != null && n >= r[0] && n <= r[1]; });
+  }
+  // 핀 번호 목록 → 짧은 범위 글자 [1,2,3,5] → '1~3, 5'
+  function compactPins(nums) {
+    var a = uniq(nums.map(Number).filter(function (n) { return !isNaN(n); })).sort(function (x, y) { return x - y; }), out = [];
+    for (var i = 0; i < a.length; i++) {
+      var j = i;
+      while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+      out.push(j > i ? a[i] + '~' + a[j] : String(a[i]));
+      i = j;
+    }
+    return out.join(', ');
+  }
+
+  // ── 전선 굵기 (SQ · GA) ──────────────────────────
+  // GA(AWG) → SQ 일반 환산값(가정). 회사 자재 DB 의 GA/SQ 환산표(ga_sq_conversion)를 불러오면 그 값을 먼저 씁니다.
+  var GA_SQ_DEFAULT = { '26': 0.13, '24': 0.2, '22': 0.3, '20': 0.5, '18': 0.85, '16': 1.25, '14': 2, '12': 3, '10': 5, '8': 8, '6': 13, '4': 21, '2': 33, '1': 42, '1/0': 53 };
+  function gaToSq(ga, table) {
+    var k = String(ga == null ? '' : ga).trim().toUpperCase().replace(/^0+(?=\d)/, '');
+    if (table && table[k] != null && toNum(table[k]) != null) return { sq: toNum(table[k]), src: '회사 환산표' };
+    if (GA_SQ_DEFAULT[k] != null) return { sq: GA_SQ_DEFAULT[k], src: '일반 환산(가정)' };
+    return null;
+  }
+  // 표 한 칸의 굵기 글자 → {text, sq, awg}. '18GA' · 'AWG 18' · '0.85' · '0.85SQ' · (머리가 GA 인 표의) '18'
+  function gaugeValue(text, header, table) {
+    var raw = String(text == null ? '' : text).trim(), s = raw.toUpperCase().replace(/\s+/g, '');
+    if (!s) return null;
+    var out = { text: raw, sq: null, awg: '' };
+    var m = s.match(/^(\d{1,2}(?:\/0)?)(?:GA|AWG|G)$/) || s.match(/^(?:AWG|GA)(\d{1,2}(?:\/0)?)$/);
+    if (!m && /^(?:GA|AWG|GAUGE)$/i.test(String(header || '').trim()) && /^\d{1,2}(?:\/0)?$/.test(s)) m = [s, s];
+    if (m) {
+      out.awg = m[1];
+      var c = gaToSq(m[1], table);
+      if (c) { out.sq = c.sq; out.conv = c.src; }
+      return out;
+    }
+    var n = s.replace(/(?:SQ|MM2|MM²|㎟)$/, '');
+    if (/^\d+(?:\.\d+)?$/.test(n)) out.sq = +n;
+    return out;
+  }
+  function sqText(sq) { return sq == null ? '' : String(Math.round(sq * 1000) / 1000); }
+  // GA/SQ 환산표 시트(열 ga · sq) → { '18': 0.85, … }
+  function parseGaSq(aoa) {
+    var rows = aoaObjects(aoa), out = {};
+    rows.forEach(function (r) {
+      var ga = String(r.ga == null ? '' : r.ga).trim().toUpperCase().replace(/^0+(?=\d)/, ''), sq = toNum(r.sq);
+      if (ga && sq != null) out[ga] = sq;
+    });
+    return out;
+  }
+
+  // ── 도면의 CAV 표 읽기 (2026-09-30 오전 답 3 — 글자 정보가 있는 PDF 만) ──────────
+  // 머리 낱말로 표를 찾습니다. CAV 표: CAV(PIN) · WIRE(CORE) · CSA(GA·SQ) [· COLOR], 전선표: NO · WIRE · GA · FROM · TO.
+  // items = pdf.js 글자 조각 [{str, x, y, w, h}] (y 는 위에서부터 잰 밑줄). 두산 도면(비교군 01)의 「PIN CORE GA COLOR」 표로 확인했습니다.
+  var WT_ROLES = [
+    ['cav', /^(?:CAV\.?|CAVITY|CAV\.?\s*NO\.?|PIN|PIN\s*NO\.?|TERM(?:INAL)?\s*NO\.?|핀|핀\s*번호|극\s*번호)$/i],
+    ['no', /^(?:NO\.?|번호)$/i],
+    ['wire', /^(?:WIRE|WIRE\s*NO\.?|CORE|CIRCUIT|CIRCUIT\s*NO\.?|CKT|CIR\.?|회로|회로\s*번호|전선\s*번호|선\s*번)$/i],
+    ['gauge', /^(?:CSA|CSA\s*\(?MM2?\)?|GA|AWG|SQ|SIZE|GAUGE|WIRE\s*SIZE|굵기|전선\s*굵기)$/i],
+    ['color', /^(?:COLOU?R|CLR|색|색상)$/i],
+    ['from', /^(?:FROM|시작)$/i],
+    ['to', /^(?:TO|끝)$/i],
+    ['type', /^(?:TYPE|SPEC|전선\s*종류)$/i]
+  ];
+  function wtRole(str) {
+    for (var i = 0; i < WT_ROLES.length; i++) if (WT_ROLES[i][1].test(String(str).trim())) return WT_ROLES[i][0];
+    return '';
+  }
+  function linesOf(list, tol) {
+    var lines = [];
+    list.slice().sort(function (a, b) { return a.y - b.y || a.x - b.x; }).forEach(function (t) {
+      var l = lines[lines.length - 1];
+      if (l && Math.abs(t.y - l.y) <= Math.max(l.h, t.h) * tol) l.items.push(t);
+      else lines.push({ y: t.y, h: t.h, items: [t] });
+    });
+    lines.forEach(function (l) { l.items.sort(function (a, b) { return a.x - b.x; }); });
+    return lines;
+  }
+  function parseWireTables(items, opt) {
+    opt = opt || {};
+    var all = (items || []).map(function (t, i) {
+      var o = { str: String(t.str == null ? '' : t.str).replace(/\s+/g, ' ').trim(), x: +t.x || 0, y: +t.y || 0, w: +t.w || 0, h: +t.h || 8, i: i };
+      o.role = wtRole(o.str); o.cx = o.x + o.w / 2;
+      return o;
+    }).filter(function (t) { return t.str; });
+    var used = {}, out = [];
+    all.forEach(function (g) {
+      if (g.role !== 'gauge' || used[g.i]) return;
+      var H = g.h;
+      var line = all.filter(function (t) { return t.role && Math.abs(t.y - g.y) <= Math.max(g.h, t.h) * 0.6; }).sort(function (a, b) { return a.x - b.x; });
+      var gi = line.indexOf(g), lo = gi, hi = gi;
+      while (lo > 0 && line[lo].x - (line[lo - 1].x + line[lo - 1].w) <= 8 * H) lo--;
+      while (hi < line.length - 1 && line[hi + 1].x - (line[hi].x + line[hi].w) <= 8 * H) hi++;
+      var cl = line.slice(lo, hi + 1);
+      cl.forEach(function (t) { used[t.i] = 1; });
+      // 같은 줄에 표가 나란히 있으면(두산 도면: 커넥터 표 3개) 같은 머리가 다시 나오는 곳에서 끊습니다
+      var segs = [], cur = [], seen = {};
+      cl.forEach(function (t) {
+        if (seen[t.role]) { segs.push(cur); cur = []; seen = {}; }
+        cur.push(t); seen[t.role] = 1;
+      });
+      if (cur.length) segs.push(cur);
+      segs.forEach(function (sg, k) {
+        var roles = sg.map(function (t) { return t.role; });
+        if (roles.indexOf('gauge') < 0) return;
+        var kind = roles.indexOf('from') >= 0 || roles.indexOf('to') >= 0 ? 'wires' : 'cav';
+        if (kind === 'cav' && roles.indexOf('cav') < 0 && roles.indexOf('no') < 0) return;
+        if (kind === 'cav' && roles.indexOf('cav') < 0 && roles.indexOf('wire') < 0) return;   // NO · GA 만으로는 표로 보지 않음
+        var prev = segs[k - 1], next = segs[k + 1];
+        var leftLim = prev ? prev[prev.length - 1].x + prev[prev.length - 1].w + 0.5 * H : -Infinity;
+        var rightLim = next ? next[0].x - 0.5 * H : Infinity;
+        var t = readWireTable(all, sg, kind, leftLim, rightLim);
+        if (t && t.rows.length) { if (opt.page) t.page = opt.page; out.push(t); }
+      });
+    });
+    return out;
+  }
+  function readWireTable(all, sg, kind, leftLim, rightLim) {
+    var H = Math.max.apply(null, sg.map(function (t) { return t.h; })), hy = Math.max.apply(null, sg.map(function (t) { return t.y; }));
+    var hasCav = sg.some(function (t) { return t.role === 'cav'; });
+    var cols = sg.map(function (t) { return { role: t.role === 'no' && kind === 'cav' && !hasCav ? 'cav' : t.role, head: t.str, x: t.x, r: t.x + t.w, cx: t.cx }; });
+    cols.forEach(function (c, i) {
+      c.lo = i ? (cols[i - 1].cx + c.cx) / 2 : Math.max(c.x - 1.2 * H, leftLim);   // 왼쪽 여유를 좁게 — 도면 테두리의 구역 글자(A·B …)를 줍지 않게
+      c.hi = i < cols.length - 1 ? (c.cx + cols[i + 1].cx) / 2 : Math.min(c.r + 6 * H, rightLim);
+    });
+    var L0 = cols[0].lo, R0 = cols[cols.length - 1].hi, inSeg = {};
+    sg.forEach(function (t) { inSeg[t.i] = 1; });
+    var gHead = cols.filter(function (c) { return c.role === 'gauge'; })[0].head;
+    var t = { kind: kind, name: '', housing: '', maker: '', gaugeHead: gHead, headers: cols.map(function (c) { return c.head; }), x: Math.round(L0), y: Math.round(hy), rows: [] };
+    // 표 위 두 줄: 커넥터 이름(-AIRCON) · 하우징 품번과 메이커(HX-4P MAKER)
+    var above = linesOf(all.filter(function (a) { return !inSeg[a.i] && a.y < hy - 0.3 * H && a.y >= hy - 4.5 * H && a.cx >= L0 - 2 * H && a.cx <= R0; }), 0.5).reverse();
+    // 「-」 로 시작하는 줄 = 커넥터 이름, 숫자가 든 첫 조각 = 하우징 품번(뒤 조각은 메이커). 조각 안의 띄어쓰기는 품번의 일부로 둡니다(「FUSE 2F」 처럼).
+    var loose = '';
+    above.slice(0, 2).forEach(function (l) {
+      var words = l.items.map(function (a) { return a.str; }), first = words[0] || '';
+      if (/^-/.test(first)) { if (!t.name) t.name = words.join(' ').replace(/^-+\s*/, ''); }
+      else if (!t.housing && /\d/.test(first) && first.replace(/\s/g, '').length >= 3 && first.length <= 40) { t.housing = first; t.maker = words.slice(1).join(' '); }
+      else if (!loose) loose = words.join(' ');
+    });
+    if (!t.name && kind === 'cav' && loose) t.name = loose;
+    var below = linesOf(all.filter(function (a) { return !inSeg[a.i] && a.y > hy + 0.3 * H && a.y <= hy + 150 * H && a.cx >= L0 && a.cx <= R0; }), 0.5);
+    var prevY = hy, pitch = null;
+    for (var li = 0; li < below.length; li++) {
+      var l = below[li], gap = l.y - prevY;
+      if (!t.rows.length && gap > 3.5 * H) break;
+      if (t.rows.length && gap > (pitch ? Math.max(1.6 * pitch, 1.2 * H) : 2.6 * H)) break;   // 표 줄 간격은 고르므로 간격이 벌어지면 표 끝
+      if (l.items.filter(function (a) { return a.role; }).length >= 2) break;    // 다음 표의 머리
+      if (/^-/.test(l.items[0].str)) break;                                      // 다음 표의 커넥터 이름
+      var cells = {};
+      l.items.forEach(function (a) {
+        var c = cols.filter(function (c0) { return a.cx >= c0.lo && a.cx < c0.hi; })[0];
+        if (c) cells[c.role] = cells[c.role] ? cells[c.role] + ' ' + a.str : a.str;
+      });
+      if (!cells.cav && !cells.no && !cells.wire && !cells.gauge) break;
+      if (kind === 'cav' && cells.cav && !/^[A-Z]{0,2}\d{1,3}[A-Z]?$/i.test(cells.cav)) break;
+      if (t.rows.length === 1 && pitch == null) pitch = gap;
+      var r = kind === 'cav' ? { cav: cells.cav || '', wire: cells.wire || '', gauge: cells.gauge || '', color: cells.color || '' }
+        : { no: cells.no || '', wire: cells.wire || '', gauge: cells.gauge || '', color: cells.color || '', type: cells.type || '', from: cells.from || '', to: cells.to || '' };
+      t.rows.push(r);
+      prevY = l.y;
+      if (t.rows.length >= 300) break;
+    }
+    return t;
+  }
+  // 여러 쪽: pages = [{items}] → 표 목록(쪽 번호 붙임)
+  function parseWireTablesPages(pages) {
+    var out = [];
+    (pages || []).forEach(function (p, i) { parseWireTables(p.items || p, { page: i + 1 }).forEach(function (t) { out.push(t); }); });
+    return out;
+  }
+  function connKey(s) { return String(s == null ? '' : s).toUpperCase().replace(/^-+/, '').replace(/\s+/g, ''); }
+
+  // CAV 표의 굵기와 도면의 다른 곳(다른 끝의 CAV 표 · 전선표)에 적힌 굵기 비교 — 첫 판(2026-09-30)
+  //  ① 같은 전선 번호가 여러 표에 나오면 굵기가 모두 같은지
+  //  ② 전선표의 FROM · TO 「COND(4)」 → COND 커넥터 표 4번 자리의 전선 번호가 같은지
+  function gaugeCheck(tables, gaSq) {
+    var byWire = {}, order = [], cav = {}, mism = [], nCav = 0, nWire = 0;
+    function gk(text, head) { var v = gaugeValue(text, head, gaSq); return !v ? '' : v.sq != null ? 'SQ ' + sqText(v.sq) : norm(v.text); }
+    function add(wire, e) {
+      var w = norm(wire); if (!w) return;
+      if (!byWire[w]) { byWire[w] = []; order.push(w); }
+      byWire[w].push(e);
+    }
+    (tables || []).forEach(function (t) {
+      if (t.kind !== 'cav') return;
+      nCav++;
+      var nm = t.name || t.housing || 'CAV 표';
+      cav[connKey(t.name)] = cav[connKey(t.name)] || {};
+      t.rows.forEach(function (r) {
+        cav[connKey(t.name)][norm(r.cav)] = { r: r, t: t };
+        if (r.wire || r.gauge) add(r.wire, { where: nm + ' ' + r.cav + '번', gauge: r.gauge, g: gk(r.gauge, t.gaugeHead) });
+      });
+    });
+    (tables || []).forEach(function (t) {
+      if (t.kind !== 'wires') return;
+      nWire++;
+      t.rows.forEach(function (r) {
+        var where = '전선표 ' + (r.no ? r.no + '행 ' : '') + '(' + (r.from || '?') + ' → ' + (r.to || '?') + ')';
+        add(r.wire, { where: where, gauge: r.gauge, g: gk(r.gauge, t.gaugeHead) });
+        [r.from, r.to].forEach(function (end) {
+          var m = String(end || '').match(/^(.+?)\s*\(\s*([A-Z]{0,2}\d{1,3}[A-Z]?)\s*\)$/i);
+          if (!m) return;
+          var c = (cav[connKey(m[1])] || {})[norm(m[2])];
+          if (!c) return;
+          if (r.wire && c.r.wire && norm(r.wire) !== norm(c.r.wire)) {
+            mism.push({ kind: '전선 번호 다름', wire: r.wire, entries: [{ where: where, value: r.wire }, { where: (c.t.name || c.t.housing) + ' ' + c.r.cav + '번', value: c.r.wire }] });
+          } else if (!r.wire) {
+            var a = gk(r.gauge, t.gaugeHead), b = gk(c.r.gauge, c.t.gaugeHead);
+            if (a && b && a !== b) mism.push({ kind: '굵기 다름', wire: '', entries: [{ where: where, value: r.gauge }, { where: (c.t.name || c.t.housing) + ' ' + c.r.cav + '번', value: c.r.gauge }] });
+          }
+        });
+      });
+    });
+    var compared = 0;
+    order.forEach(function (w) {
+      var es = byWire[w].filter(function (e) { return e.g; });
+      if (es.length < 2) return;
+      compared++;
+      if (uniq(es.map(function (e) { return e.g; })).length > 1) mism.push({ kind: '굵기 다름', wire: w, entries: es.map(function (e) { return { where: e.where, value: e.gauge }; }) });
+    });
+    return { cavTables: nCav, wireTables: nWire, wires: order.length, compared: compared, mismatches: mism };
+  }
+
+  // ── 회사 자재 DB 내보내기 읽기 (2026-09-30 오전 답 1 — 「회사 자재 DB 구축을 위한 자료」 표본의 열 구성) ──────────
+  // 시트 이름·열 이름을 그대로 찾습니다(자동 맞춤). 하우징 한 종 = hsg_detail 한 행(회사별).
+  //   hsg_detail(hsg_item · no_pins · lock_sn · lock_add_sn · cap_sn · hsg_match_sn · opt_sn · use_hsg)
+  //   └ hsg_pin_block(pin_range · block_type TML/SEAL/DUMMY · sub_item)   ← 있으면 이것을 씀
+  //   └ hsg_pin(pin_row · tml_gid · seal_gid · dummy_sn) + sub_group_id_item_link  ← 블록이 없는 하우징
+  //   └ hsg_cover(cover_item) · hsg_etc_add_link_detail(etc_add_item · qty · required · remark)
+  //   tml_detail · seal_detail(sq_min · sq_max) = 단자·씰이 맞는 전선 굵기 범위, ga_sq_conversion = GA → SQ
+  var ERP_SHEETS = ['item', 'hsg_detail', 'hsg_pin', 'hsg_pin_block', 'hsg_cover', 'hsg_etc_add_link_detail',
+    'sub_group_id_item_link', 'tml_detail', 'seal_detail', 'ga_sq_conversion', 'sub_remark'];
+  function aoaObjects(aoa) {
+    if (!aoa || !aoa.length) return [];
+    var h = (aoa[0] || []).map(function (x) { return String(x == null ? '' : x).trim().toLowerCase(); });
+    return aoa.slice(1).map(function (r) {
+      var o = {};
+      h.forEach(function (k, i) { if (k) o[k] = r && r[i] != null ? String(r[i]).trim() : ''; });
+      return o;
+    });
+  }
+  function isErpMasterBook(sheetNames) { return (sheetNames || []).some(function (n) { return /^hsg_detail$/i.test(String(n).trim()); }); }
+  function erpSheet(book, name) {
+    var k = Object.keys(book || {}).filter(function (n) { return n.trim().toLowerCase() === name; })[0];
+    return k ? aoaObjects(book[k]) : [];
+  }
+  function groupBy(list, key) {
+    var m = {};
+    list.forEach(function (r) { var k = r[key]; if (k == null || k === '') return; (m[k] || (m[k] = [])).push(r); });
+    return m;
+  }
+  function erpCompanies(book) {
+    var c = {};
+    erpSheet(book, 'hsg_detail').forEach(function (d) { var k = d.company || ''; c[k] = (c[k] || 0) + 1; });
+    return c;
+  }
+  function parseErpMaster(book, opt) {
+    opt = opt || {};
+    var D = erpSheet(book, 'hsg_detail');
+    if (!D.length || !('hsg_item' in D[0])) return { rows: [], info: {}, gaSq: {}, error: 'hsg_detail 시트에 hsg_item 열이 없습니다.' };
+    var comps = erpCompanies(book);
+    var company = opt.company != null ? opt.company : Object.keys(comps).sort(function (a, b) { return comps[b] - comps[a]; })[0];
+    var items = {};
+    erpSheet(book, 'item').forEach(function (r) { if (r.item_code) items[norm(r.item_code)] = { name: r.item_name || '', group: r.item_group || '' }; });
+    function nameOf(code) { var it = items[norm(code)]; return !it ? '' : it.name && norm(it.name) !== norm(code) ? it.name : it.group; }
+    function byCo(list, codeKey) { var m = {}; list.forEach(function (r) { if (r[codeKey]) m[(r.company || '') + '|' + norm(r[codeKey])] = r; }); return m; }
+    var tml = byCo(erpSheet(book, 'tml_detail'), 'tml_item'), seal = byCo(erpSheet(book, 'seal_detail'), 'seal_item');
+    function sqOf(map, code) {
+      var r = map[company + '|' + norm(code)] || map['|' + norm(code)];
+      if (!r) return null;
+      var a = toNum(r.sq_min), b = toNum(r.sq_max);
+      if (a == null || b == null || (a === 0 && b === 0)) return null;
+      return { min: Math.min(a, b), max: Math.max(a, b) };
+    }
+    var P = groupBy(erpSheet(book, 'hsg_pin'), 'parent'), B = groupBy(erpSheet(book, 'hsg_pin_block'), 'parent');
+    var C = groupBy(erpSheet(book, 'hsg_cover'), 'parent'), E = groupBy(erpSheet(book, 'hsg_etc_add_link_detail'), 'parent');
+    var G = groupBy(erpSheet(book, 'sub_group_id_item_link'), 'parent');
+    var SR = {};
+    erpSheet(book, 'sub_remark').forEach(function (r) { if (!r.company || r.company === company) SR[norm(r.hsg_item) + '|' + norm(r.sub_item)] = r.sub_remark || ''; });
+    var gaSq = parseGaSq((function () { var k = Object.keys(book || {}).filter(function (n) { return n.trim().toLowerCase() === 'ga_sq_conversion'; })[0]; return k ? book[k] : []; })());
+    var rows = [], info = {}, st = { details: D.length, company: company, companies: comps, housings: 0, otherCompany: 0, fromBlocks: 0, fromPins: 0, noChildren: 0,
+      terminals: 0, terminalsWithSq: 0, seals: 0, sealsWithSq: 0, byKind: {}, gaSq: Object.keys(gaSq).length };
+    D.forEach(function (d) {
+      if ((d.company || '') !== company) { st.otherCompany++; return; }
+      var hs = norm(d.hsg_item);
+      if (!hs) return;
+      var pins = toNum(d.no_pins);
+      info[hs] = { pins: pins || null, series: d.series_name || '', cap: d.cap_sn || '', match: d.hsg_match_sn || '', opt: d.opt_sn || '', use: d.use_hsg !== '0' };
+      st.housings++;
+      var n0 = rows.length, seen = {};
+      function add(kind, item, basis, o) {
+        item = String(item == null ? '' : item).trim();
+        if (!item) return;
+        o = o || {};
+        var k = kind + '|' + (o.pinRange || '') + '|' + norm(item);
+        if (seen[k]) return;
+        seen[k] = 1;
+        var rg = o.range;
+        rows.push({ housing: hs, item: item, name: nameOf(item), kind: kind, qty: o.qty == null ? 1 : o.qty, unit: 'EA', basis: basis,
+          csaText: rg ? sqText(rg.min) + '~' + sqText(rg.max) : '', csaMin: rg ? rg.min : null, csaMax: rg ? rg.max : null, pins: pins || null,
+          note: o.note || '', pinRange: o.pinRange || '', slot: o.slot || '', optional: !!o.optional });
+        st.byKind[kind] = (st.byKind[kind] || 0) + 1;
+        if (kind === '단자') { st.terminals++; if (rg) st.terminalsWithSq++; }
+        if (kind === '씰') { st.seals++; if (rg) st.sealsWithSq++; }
+      }
+      add('LOCK', d.lock_sn, '하우징당');
+      add('LOCK 추가', d.lock_add_sn, '하우징당');
+      (C[d.name] || []).forEach(function (c) { add('커버', c.cover_item, '하우징당'); });
+      (E[d.name] || []).forEach(function (e) { add('부가 자재', e.etc_add_item, '하우징당', { qty: toNum(e.qty) || 1, note: e.remark || '', optional: e.required === '0' }); });
+      var bl = (B[d.name] || []).slice().sort(function (a, b) { return N(a.idx) - N(b.idx); });
+      if (bl.length) {
+        st.fromBlocks++;
+        bl.forEach(function (b) {
+          var t = String(b.block_type || '').toUpperCase(), pr = pinRangeText(b.pin_range), note = b.sub_remark || SR[hs + '|' + norm(b.sub_item)] || '';
+          if (t === 'TML') add('단자', b.sub_item, '회로당', { range: sqOf(tml, b.sub_item), pinRange: pr, slot: 'TML|' + pr, note: note });
+          else if (t === 'SEAL') add('씰', b.sub_item, '회로당', { range: sqOf(seal, b.sub_item), pinRange: pr, slot: 'SEAL|' + pr, note: note });
+          else if (t === 'DUMMY') add('더미(빈 자리)', b.sub_item, '빈 자리당', { pinRange: pr, slot: 'DUMMY|' + pr, note: note });
+        });
+      } else if ((P[d.name] || []).length) {
+        st.fromPins++;
+        // 핀마다 한 행이라 같은 조합(단자 그룹 · 씰 그룹 · 더미)을 묶어 핀 범위로 줄입니다
+        var combos = {}, corder = [];
+        P[d.name].forEach(function (p) {
+          var k = [p.tml_gid, p.seal_gid, p.dummy_sn].join('|');
+          if (!combos[k]) { combos[k] = { p: p, pins: [], all: false }; corder.push(k); }
+          if (pinRangeText(p.pin_row) === '') combos[k].all = true; else combos[k].pins.push(p.pin_row);
+        });
+        corder.forEach(function (k) {
+          var c = combos[k], p = c.p, pr = c.all ? '' : compactPins(c.pins);
+          (G[p.tml_gid] || []).forEach(function (l) { add('단자', l.sub_group_item, '회로당', { range: sqOf(tml, l.sub_group_item), pinRange: pr, slot: 'TML|' + pr, note: SR[hs + '|' + norm(l.sub_group_item)] || '' }); });
+          (G[p.seal_gid] || []).forEach(function (l) { add('씰', l.sub_group_item, '회로당', { range: sqOf(seal, l.sub_group_item), pinRange: pr, slot: 'SEAL|' + pr }); });
+          add('더미(빈 자리)', p.dummy_sn, '빈 자리당', { pinRange: pr, slot: 'DUMMY|' + pr });
+        });
+      }
+      if (rows.length === n0) st.noChildren++;
+    });
+    st.rows = rows.length;
+    return { rows: rows, info: info, gaSq: gaSq, company: company, stats: st, error: st.housings ? '' : '고른 회사(' + company + ')의 하우징이 없습니다.' };
+  }
+
   function escRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function masterKeys(master, info) {
+    return uniq((master || []).map(function (r) { return r.housing; }).concat(Object.keys(info || {})));
+  }
   // 도면 글자·주요 커넥터 칸에서 마스터에 있는 하우징 품번을 찾아 개수를 셉니다.
   // 품번 안의 하이픈 앞뒤 공백은 무시합니다(PDF 글자가 「DT06 - 2S」 처럼 떨어져 나오는 경우).
-  function findHousings(text, connectors, master) {
-    var keys = uniq((master || []).map(function (r) { return r.housing; })), up = String(text || '').toUpperCase(), list = splitList(connectors), out = [];
+  function findHousings(text, connectors, master, info) {
+    var keys = masterKeys(master, info), up = String(text || '').toUpperCase(), list = splitList(connectors), out = [];
     keys.forEach(function (k) {
       var re = new RegExp('(?:^|[^A-Z0-9])' + escRe(k).replace(/\\-|-/g, '\\s*-\\s*') + '(?![A-Z0-9])', 'g'), n = 0;
       while (re.exec(up)) n++;
@@ -1810,47 +2194,175 @@
     });
     return out;
   }
-  // 하우징 한 개의 핀 수 기본값: 마스터의 핀 수 열 → 없으면 품번 모양(-2S · -12P 처럼 「숫자+S/P」)에서 추정 → 없으면 1
-  function housingPins(housing, master) {
+  // 도면의 CAV 표 → 하우징별 실제 커넥터(표 하나 = 커넥터 하나). 마스터에 없는 하우징은 missing 으로(비슷한 품번 함께).
+  function housingsFromCavTables(tables, master, info) {
+    var keys = masterKeys(master, info), has = {}, out = [], miss = [];
+    keys.forEach(function (k) { has[k] = 1; });
+    (tables || []).forEach(function (t) {
+      if (t.kind !== 'cav') return;
+      var h = norm(t.housing);
+      if (!h || !has[h]) {
+        miss.push({ name: t.name || '', housing: h, near: h ? keys.filter(function (k) { return k.indexOf(h) === 0 && /^[-_ ]/.test(k.slice(h.length)); }).slice(0, 5) : [] });
+        return;
+      }
+      var f = out.filter(function (x) { return x.housing === h; })[0];
+      if (!f) { f = { housing: h, count: 0, from: 'CAV 표', instances: [] }; out.push(f); }
+      f.count++;
+      f.instances.push({ name: t.name || '', gaugeHead: t.gaugeHead || '', cavs: t.rows.map(function (r) { return { cav: r.cav, wire: r.wire, gauge: r.gauge, used: !!(r.wire || r.gauge) }; }) });
+    });
+    return { found: out, missing: miss };
+  }
+  // 직접 넣는 「사용 핀:굵기」 — '1:0.5, 2:18GA, 4~6:1.25, 3' (굵기 없는 핀은 굵기 모름)
+  function parseCavSpec(text) {
+    var out = [];
+    String(text || '').split(/[,;\n]/).forEach(function (tok) {
+      tok = tok.trim();
+      if (!tok) return;
+      var m = tok.match(/^([A-Z]{0,2}\d{1,3}[A-Z]?)(?:\s*[~\-–]\s*(\d{1,3}))?\s*(?:[:=]\s*(.+))?$/i);
+      if (!m) return;
+      var g = (m[3] || '').trim();
+      if (m[2] && /^\d+$/.test(m[1])) for (var i = +m[1]; i <= +m[2] && i - +m[1] < 200; i++) out.push({ cav: String(i), gauge: g, used: true });
+      else out.push({ cav: m[1].toUpperCase(), gauge: g, used: true });
+    });
+    return out;
+  }
+  // 하우징 한 개의 핀 수 기본값: 회사 DB 의 no_pins → 마스터의 핀 수 열 → 품번 모양(-2S · -12P)에서 추정 → 없으면 1
+  function housingPins(housing, master, info) {
+    var inf = (info || {})[norm(housing)];
+    if (inf && inf.pins) return inf.pins;
     var r = (master || []).filter(function (x) { return x.housing === norm(housing) && x.pins; })[0];
     if (r) return r.pins;
     var m = String(housing).match(/-(\d{1,2})[SP](?![0-9])/i);
     return m ? +m[1] : 1;
   }
-  // BOM 펼치기. found = [{housing, count(도면 안 개수), circuits(하우징 하나에 쓰는 회로 수), csa(전선 굵기 SQ)}]
+  // BOM 펼치기.
+  //  found = [{housing, count, from, (instances | cavSpec | circuits·csa)}]
+  //   instances = CAV 표에서 읽은 커넥터들 [{name, gaugeHead, cavs:[{cav, wire, gauge, used}]}] — 가장 정확
+  //   cavSpec   = 직접 넣은 「사용 핀:굵기」 (count 개 모두 같다고 봄)
+  //   circuits·csa = 예전 방식(회로 수 · 한 가지 굵기) — 핀 번호를 모르면 1번부터 차례로 쓴다고 봅니다
+  //  opt = {merge, info, gaSq}
+  // 단자·씰(회로당)은 **쓰는 회로(전선이 있는 자리)만** 셉니다(2026-09-30 답 2). 같은 자리의 후보가 굵기 범위로 나뉘어 있으면
+  // 회로마다 그 전선 굵기가 들어가는 후보 하나를 고릅니다(범위가 가장 좁은 것). 쓰지 않는 자리는 더미(빈 자리당)로 셉니다.
   // 돌려주는 rows: [{출처, 하우징, 품목코드, 품목명, 구분, 수량, 단위, 근거, 확인}] — 하우징 행 다음에 딸린 자재 행.
   function expandHousingBom(found, master, opt) {
     opt = opt || {};
-    var rows = [];
+    master = master || [];
+    var info = opt.info || {}, gaSq = opt.gaSq, rows = [];
     (found || []).forEach(function (f) {
-      var hs = norm(f.housing), cnt = toNum(f.count) || 0, cir = toNum(f.circuits), csa = toNum(f.csa);
-      if (cir == null) cir = housingPins(hs, master);
-      var kids = (master || []).filter(function (r) { return r.housing === hs; });
-      rows.push({ 출처: f.from || '도면', 하우징: hs, 품목코드: hs, 품목명: '', 구분: '하우징', 수량: cnt, 단위: 'EA', 근거: (f.from === '직접 입력' ? '직접 입력 ' : '도면에서 ') + cnt + '곳', 확인: kids.length ? '' : '마스터에 없음 — 딸린 자재를 불러오지 못했습니다' });
-      kids.forEach(function (r) {
-        var chk = '';
-        if (r.csaMin != null) {
-          if (csa == null) chk = '전선 굵기 입력 필요(적용 ' + r.csaText + ')';
-          else if (csa < r.csaMin - 1e-9 || csa > r.csaMax + 1e-9) return;   // 굵기가 맞지 않는 단자는 뺍니다
+      var hs = norm(f.housing), kids = master.filter(function (r) { return r.housing === hs; }), inf = info[hs];
+      var pinsN = housingPins(hs, master, info), insts = [], total = 0;
+      function circ(list, head) {
+        return list.map(function (c) { var v = gaugeValue(c.gauge, head, gaSq); return { cav: String(c.cav == null ? '' : c.cav).trim(), sq: v ? v.sq : null, text: c.gauge || '', used: c.used !== false }; });
+      }
+      if (f.instances && f.instances.length) {
+        f.instances.forEach(function (i) { insts.push({ name: i.name, mult: 1, cavs: circ(i.cavs || [], i.gaugeHead), known: true }); });
+      } else {
+        var cnt = toNum(f.count) || 0, spec = parseCavSpec(f.cavSpec);
+        if (spec.length) insts.push({ mult: cnt, cavs: circ(spec, ''), known: true });
+        else {
+          var cir = toNum(f.circuits);
+          if (cir == null) cir = pinsN;
+          var cs = [];
+          for (var i = 0; i < cir && i < 500; i++) cs.push({ cav: String(i + 1), gauge: f.csa == null ? '' : String(f.csa), used: true });
+          insts.push({ mult: cnt, cavs: circ(cs, ''), known: false });
         }
-        var q = r.basis === '회로당' ? r.qty * cir * cnt : r.qty * cnt;
-        rows.push({ 출처: 'ASSY 마스터 (' + hs + ')', 하우징: hs, 품목코드: r.item, 품목명: r.name, 구분: r.kind, 수량: Math.round(q * 1000) / 1000, 단위: r.unit,
-          근거: r.basis === '회로당' ? r.qty + ' × 회로 ' + cir + ' × ' + cnt + '곳' : r.qty + ' × ' + cnt + '곳', 확인: chk });
+      }
+      insts.forEach(function (x) { total += x.mult; });
+      var hsChk = !kids.length ? (inf ? '회사 DB 에 이 하우징의 딸린 자재가 없습니다' : '마스터에 없음 — 딸린 자재를 불러오지 못했습니다') : (inf && inf.use === false ? '회사 DB 에서 사용 안 함(use_hsg 0)으로 표시된 하우징' : '');
+      var nUsed = 0;
+      insts.forEach(function (x) { nUsed += x.cavs.filter(function (c) { return c.used; }).length * x.mult; });
+      rows.push({ 출처: f.from || '도면', 하우징: hs, 품목코드: hs, 품목명: '', 구분: '하우징', 수량: total, 단위: 'EA',
+        근거: (f.from === '직접 입력' ? '직접 입력 ' : f.from === 'CAV 표' ? 'CAV 표 ' : '도면에서 ') + total + '곳 · 쓰는 회로 ' + nUsed + (pinsN ? ' / 핀 ' + pinsN * total : ''), 확인: hsChk });
+      // 행 모으기 — 같은 자재는 한 줄로(수량·근거 누적)
+      var acc = {}, order = [];
+      function put(key, base, q, circ0, chk) {
+        if (!acc[key]) { acc[key] = { base: base, q: 0, n: 0, sqs: {}, chk: [], inst: 0 }; order.push(key); }
+        var a = acc[key];
+        a.q += q;
+        if (circ0) { a.n += circ0.mult; if (circ0.sq != null) a.sqs[sqText(circ0.sq)] = (a.sqs[sqText(circ0.sq)] || 0) + circ0.mult; }
+        if (chk && a.chk.indexOf(chk) < 0) a.chk.push(chk);
+      }
+      insts.forEach(function (x) {
+        var m = x.mult, usedC = x.cavs.filter(function (c) { return c.used; });
+        // 쓰지 않는 자리 = 핀 1~N 중 전선이 없는 자리(표에 적힌 빈 자리 포함)
+        var usedSet = {}, unused = [];
+        usedC.forEach(function (c) { usedSet[c.cav.toUpperCase()] = 1; });
+        for (var p = 1; p <= (pinsN || 0); p++) if (!usedSet[String(p)]) unused.push(String(p));
+        x.cavs.forEach(function (c) { if (!c.used && !/^\d+$/.test(c.cav) && unused.indexOf(c.cav) < 0) unused.push(c.cav); });
+        kids.forEach(function (r, ri) {
+          if (r.basis === '하우징당') put(ri, r, r.qty * m, null, r.optional ? '선택 자재' + (r.note ? ' — ' + r.note : '') : '');
+          if (r.basis === '빈 자리당') {
+            var nu = unused.filter(function (c) { return pinRangeHas(r.pinRange, c); }).length;
+            if (nu) put(ri, r, r.qty * nu * m, null, !x.known ? '빈 자리를 핀 수 − 회로 수로 셈' : '');
+            if (nu && acc[ri]) acc[ri].holes = (acc[ri].holes || 0) + nu * m;
+          }
+        });
+        // 회로당 — 자리(slot)별로 후보를 고릅니다
+        var slots = {}, sorder = [];
+        kids.forEach(function (r, ri) {
+          if (r.basis !== '회로당') return;
+          var sk = r.slot || (r.kind + '|' + (r.pinRange || ''));
+          if (!slots[sk]) { slots[sk] = []; sorder.push(sk); }
+          slots[sk].push(ri);
+        });
+        sorder.forEach(function (sk) {
+          var ids = slots[sk], ranged = ids.filter(function (ri) { return kids[ri].csaMin != null; }), plain = ids.filter(function (ri) { return kids[ri].csaMin == null; });
+          var pr = kids[ids[0]].pinRange, guessChk = !x.known && pinRangeText(pr) ? '사용 핀 번호 모름 — 1~' + usedC.length + '번으로 가정' : '';
+          usedC.forEach(function (c) {
+            if (!pinRangeHas(pr, c.cav)) return;
+            var cm = { mult: m, sq: c.sq };
+            // 굵기 범위가 없는 행: 도구 양식이면 늘 넣고(예전 규칙), 회사 DB 의 같은 자리 후보(slot)면 대안 중 하나로 봅니다
+            var isAlt = !!kids[ids[0]].slot;
+            if (!isAlt) plain.forEach(function (ri) { put(ri, kids[ri], kids[ri].qty * m, cm, guessChk); });
+            else if (!ranged.length && plain.length) {
+              put(plain[0], kids[plain[0]], kids[plain[0]].qty * m, cm, plain.length > 1 ? '같은 자리 후보 ' + plain.length + '개(굵기 범위 없음) — 첫째 것을 넣음, 확인' : guessChk);
+            }
+            if (!ranged.length) return;
+            if (c.sq == null) {
+              ranged.forEach(function (ri) { put(ri, kids[ri], kids[ri].qty * m, cm, '전선 굵기 입력 필요(적용 ' + kids[ri].csaText + ')'); });
+              return;
+            }
+            var cand = ranged.filter(function (ri) { var r = kids[ri]; return c.sq >= r.csaMin - 1e-9 && c.sq <= r.csaMax + 1e-9; });
+            if (!cand.length && isAlt && plain.length) {   // 굵기 범위가 DB 에 없는 후보가 남아 있으면 그것으로(확인 표시)
+              put(plain[0], kids[plain[0]], kids[plain[0]].qty * m, cm, 'SQ ' + sqText(c.sq) + ' 에 맞는 범위의 후보가 없어 굵기 범위 미등록 후보를 넣음 — 확인');
+              return;
+            }
+            if (!cand.length) {
+              var k0 = kids[ranged[0]];
+              put('없음|' + sk + '|' + sqText(c.sq), { item: '(맞는 ' + (k0.kind || '자재') + ' 없음)', name: '', kind: k0.kind, unit: k0.unit, qty: k0.qty }, k0.qty * m, cm,
+                'SQ ' + sqText(c.sq) + ' 에 맞는 ' + (k0.kind || '자재') + '가 마스터에 없음(후보 ' + ranged.map(function (ri) { return kids[ri].item + ' ' + kids[ri].csaText; }).join(', ') + ')');
+              return;
+            }
+            cand.sort(function (a, b) { return (kids[a].csaMax - kids[a].csaMin) - (kids[b].csaMax - kids[b].csaMin) || a - b; });
+            put(cand[0], kids[cand[0]], kids[cand[0]].qty * m, cm, cand.length > 1 && (kids[cand[1]].csaMax - kids[cand[1]].csaMin) === (kids[cand[0]].csaMax - kids[cand[0]].csaMin) ? '굵기 범위가 같은 후보 ' + cand.length + '개 — 비고(' + kids[cand[0]].note + ') 확인' : guessChk);
+          });
+        });
+      });
+      order.sort(function (a, b) { return (typeof a === 'number' ? a : 1e9) - (typeof b === 'number' ? b : 1e9); });
+      order.forEach(function (k) {
+        var a = acc[k], r = a.base, why;
+        if (r.basis === '회로당' || typeof k === 'string') {
+          var sq = Object.keys(a.sqs).sort(function (x, y) { return +x - +y; }).map(function (s) { return s + '×' + a.sqs[s]; });
+          why = r.qty + ' × 쓰는 회로 ' + a.n + (sq.length ? ' (SQ ' + sq.join(', ') + ')' : '') + (r.pinRange ? ' · 핀 ' + r.pinRange : '');
+        } else if (r.basis === '빈 자리당') why = r.qty + ' × 빈 자리 ' + (a.holes || 0) + (r.pinRange ? ' · 핀 ' + r.pinRange : '');
+        else why = r.qty + ' × ' + total + '곳';
+        rows.push({ 출처: 'ASSY 마스터 (' + hs + ')', 하우징: hs, 품목코드: r.item, 품목명: r.name || '', 구분: r.kind || '', 수량: Math.round(a.q * 1000) / 1000, 단위: r.unit || 'EA',
+          근거: why + (r.note ? ' · ' + r.note : ''), 확인: a.chk.filter(Boolean).join(' / ') });
       });
     });
     if (!opt.merge) return rows;
     // 같은 품목코드 합치기(출처는 이어 적음)
-    var by = {}, order = [];
+    var by = {}, order2 = [];
     rows.forEach(function (r) {
       var k = norm(r.품목코드);
-      if (!by[k]) { by[k] = Object.assign({}, r); order.push(k); return; }
+      if (!by[k]) { by[k] = Object.assign({}, r); order2.push(k); return; }
       by[k].수량 = Math.round((by[k].수량 + r.수량) * 1000) / 1000;
       if (by[k].출처.indexOf(r.출처) < 0) by[k].출처 += ' · ' + r.출처;
       if (by[k].하우징.indexOf(r.하우징) < 0) by[k].하우징 += ', ' + r.하우징;
       if (r.확인 && by[k].확인.indexOf(r.확인) < 0) by[k].확인 = (by[k].확인 ? by[k].확인 + ' / ' : '') + r.확인;
       by[k].근거 = '합계';
     });
-    return order.map(function (k) { return by[k]; });
+    return order2.map(function (k) { return by[k]; });
   }
   // 엑셀 저장용: ERP BOM 과 같은 순서(품목코드·품목명·규격·단위·수량·적요) + 출처·확인
   function sheetHousingBom(rows, drawingLabel) {
@@ -1864,6 +2376,9 @@
     var db = emptyDb();
     if (!p || typeof p !== 'object') return db;
     ['drawings', 'groups', 'decisions', 'ecns', 'housingMaster'].forEach(function (k) { if (Array.isArray(p[k])) db[k] = p[k]; });
+    // 하우징 마스터 이름·하우징 정보(핀 수 등)·GA→SQ 환산표 (2026-09-30 오전 — 회사 자재 DB 불러오기)
+    if (typeof p.housingMasterName === 'string') db.housingMasterName = p.housingMasterName;
+    ['housingInfo', 'gaSq', 'housingMasterStats'].forEach(function (k) { if (p[k] && typeof p[k] === 'object' && !Array.isArray(p[k])) db[k] = p[k]; });
     if (p.settings && typeof p.settings === 'object') {
       var s = defaultSettings();
       Object.keys(s).forEach(function (k) { if (p.settings[k] != null) s[k] = p.settings[k]; });
@@ -1899,7 +2414,11 @@
     parseBomSheet: parseBomSheet, defaultCompareCols: defaultCompareCols, isExcludedBomCol: isExcludedBomCol, bomCompareCols: bomCompareCols, textLayerInfo: textLayerInfo, compareModeFor: compareModeFor, editDistance: editDistance,
     replacementCandidates: replacementCandidates, materialsFromDiff: materialsFromDiff, filledMaterials: filledMaterials,
     titleBlockFields: titleBlockFields, titleRegionItems: titleRegionItems, fileNameFields: fileNameFields, extractFromPdf: extractFromPdf, customerFromText: customerFromText, normDate: normDate,
-    parseHousingMaster: parseHousingMaster, findHousings: findHousings, housingPins: housingPins, expandHousingBom: expandHousingBom, sheetHousingBom: sheetHousingBom, csaRange: csaRange
+    parseHousingMaster: parseHousingMaster, findHousings: findHousings, housingPins: housingPins, expandHousingBom: expandHousingBom, sheetHousingBom: sheetHousingBom, csaRange: csaRange,
+    pinRangeText: pinRangeText, pinRangeHas: pinRangeHas, compactPins: compactPins, gaToSq: gaToSq, gaugeValue: gaugeValue, parseGaSq: parseGaSq, GA_SQ_DEFAULT: GA_SQ_DEFAULT,
+    parseWireTables: parseWireTables, parseWireTablesPages: parseWireTablesPages, gaugeCheck: gaugeCheck,
+    ERP_SHEETS: ERP_SHEETS, isErpMasterBook: isErpMasterBook, erpCompanies: erpCompanies, parseErpMaster: parseErpMaster,
+    housingsFromCavTables: housingsFromCavTables, parseCavSpec: parseCavSpec, revFromPartNo: revFromPartNo
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.HNLogic = api;

@@ -116,8 +116,17 @@ begin
     values ('DT06-2S-CE06', 'EX-LK-2S', 'LOCK', 'LOCK', 1, '하우징당', '', null, null),
            ('DT06-2S-CE06', 'EX-TM-S16-A', '단자', '단자', 1, '회로당', '0.5~1.0', 0.5, 1.0);
   perform public._assert_eq((select count(*) from public.housing_master), 2::bigint, 'A 는 자기 하우징 마스터 2행을 본다');
-  perform public._assert_raises($q$insert into public.housing_master (housing, item) values ('DT06-2S-CE06', 'EX-LK-2S')$q$, '23505', '같은 하우징·자재는 두 번 넣지 못한다(upsert 기준)');
-  perform public._assert_raises($q$insert into public.housing_master (housing, item, basis) values ('X', 'Y', '개당')$q$, '23514', '수량 기준은 하우징당·회로당만');
+  perform public._assert_raises($q$insert into public.housing_master (housing, item, kind) values ('DT06-2S-CE06', 'EX-LK-2S', 'LOCK')$q$, '23505', '같은 하우징·구분·핀 범위·자재는 두 번 넣지 못한다(upsert 기준)');
+  perform public._assert_raises($q$insert into public.housing_master (housing, item, basis) values ('X', 'Y', '개당')$q$, '23514', '수량 기준은 하우징당·회로당·빈 자리당만');
+  -- 2026-09-30 오전: 같은 단자가 핀 범위별로, 같은 품번이 더미로도 — 넣을 수 있어야 한다
+  insert into public.housing_master (housing, item, kind, basis, pin_range, slot, optional)
+    values ('DT06-2S-CE06', 'EX-TM-S16-A', '단자', '회로당', '2', 'TML|2', false),
+           ('DT06-2S-CE06', 'EX-DM-1', '더미(빈 자리)', '빈 자리당', '', 'DUMMY|', false);
+  perform public._assert_eq((select count(*) from public.housing_master), 4::bigint, '핀 범위가 다르면 같은 단자를 따로 넣고, 빈 자리당 기준도 받는다');
+  update public.app_settings set housing_info = '{"DT06-2S-CE06":{"pins":2}}', ga_sq = '{"18":0.85}';
+  perform public._assert_raises($q$update public.app_settings set ga_sq = '[]'$q$, '23514', 'ga_sq 는 객체');
+  update public.drawing set cav_tables = '[{"kind":"cav","rows":[]}]' where drawing_id = 'DWG-0001';
+  perform public._assert_raises($q$update public.drawing set cav_tables = '{}' where drawing_id = 'DWG-0001'$q$, '23514', 'cav_tables 는 배열');
   perform public._assert_raises($q$insert into public.housing_master (housing, item, csa_min, csa_max) values ('X', 'Z', 2, 1)$q$, '23514', '전선 굵기 범위는 min <= max');
   perform public._assert_raises($q$update public.drawing set title_items = '{}' where drawing_id = 'DWG-0001'$q$, '23514', 'title_items 는 배열');
 
