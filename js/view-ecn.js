@@ -282,7 +282,7 @@
       if (App.exportEcnXlsx) { App.exportEcnXlsx(e); return; }
       var r = L.ecnReport(e, today);
       App.downloadXlsx('설계변경통보서_' + (e.ecnNo || e.id).replace(/[\\/:*?"<>|]/g, '_'), [
-        { name: '설계변경통보서', rows: r.rows, merges: r.merges, widths: r.widths },
+        { name: '설계변경통보서', rows: r.rows, merges: r.merges, widths: r.widths, logo: App.ECN_LOGO_SLOT },
         { name: '6_변경자재목록', rows: L.sheetMaterials(db, e.id) }
       ]);
     });

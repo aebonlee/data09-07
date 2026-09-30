@@ -87,18 +87,50 @@
     if (!root.XLSX) { App.toast('엑셀 라이브러리를 불러오지 못했습니다. vendor/xlsx.full.min.js 를 확인하세요.'); return false; }
     return true;
   };
-  // sheets = [{name, rows(2차원 배열), merges?, widths?}]
-  App.downloadXlsx = function (fileName, sheets) {
-    if (!App.xlsxReady()) return;
-    var wb = root.XLSX.utils.book_new();
-    sheets.forEach(function (s) {
-      var ws = root.XLSX.utils.aoa_to_sheet(s.rows);
-      if (s.merges) ws['!merges'] = s.merges.map(function (r) { return root.XLSX.utils.decode_range(r); });
+  // sheets = [{name, rows(2차원 배열), merges?, widths?, logo?}]
+  // 회사 로고(2026-09-30 수강생 요청): 시트마다 왼쪽 위에 로고를 넣고, 표는 그 아래(LOGO_ROWS 줄 뒤)부터 씁니다.
+  // 시트 범위(!ref)는 표가 시작하는 줄부터로 두어, 이 파일을 다시 불러와도 첫 줄 = 머리행으로 읽힙니다(도면 대장 · 하우징 마스터 등).
+  // logo: false = 넣지 않음, {col, row, height, dx, dy} = 양식에 비워 둔 자리에 넣고 표는 밀지 않음(설계변경통보서 A1:B4).
+  App.LOGO_ROWS = 3;          // 로고 자리 3줄(기본 20픽셀 × 3)
+  App.LOGO_HEIGHT = 56;       // 로고 높이(픽셀), 폭은 비율대로
+  App.buildXlsx = function (sheets) {
+    var X = root.XLSX, wb = X.utils.book_new(), images = [], logo = root.HNLogo, useLogo = !!(logo && root.HNXlsxImage);
+    sheets.forEach(function (s, i) {
+      var slot = s.logo && typeof s.logo === 'object' ? s.logo : null;
+      var shift = useLogo && s.logo !== false && !slot ? App.LOGO_ROWS : 0;
+      var ws = X.utils.aoa_to_sheet(s.rows, shift ? { origin: shift } : undefined);
+      if (shift && ws['!ref']) { var rg = X.utils.decode_range(ws['!ref']); rg.s.r = shift; ws['!ref'] = X.utils.encode_range(rg); }
+      if (s.merges) ws['!merges'] = s.merges.map(function (r) {
+        var d = X.utils.decode_range(r); d.s.r += shift; d.e.r += shift; return d;
+      });
       var widths = s.widths || autoWidths(s.rows);
       ws['!cols'] = widths.map(function (w) { return { wch: w }; });
-      root.XLSX.utils.book_append_sheet(wb, ws, s.name.slice(0, 31));
+      if (s.rowsHpx && s.rowsHpx.length) ws['!rows'] = s.rowsHpx.map(function (v) { return v ? { hpx: v } : null; });
+      X.utils.book_append_sheet(wb, ws, s.name.slice(0, 31));
+      if (useLogo && s.logo !== false) images.push(App.logoImage(i + 1, slot || {}));
     });
-    root.XLSX.writeFile(wb, App.fileName(fileName));
+    var bytes = X.write(wb, { type: 'array', bookType: 'xlsx' });
+    if (images.length) bytes = root.HNXlsxImage.addImages(X, new Uint8Array(bytes), images);
+    return bytes;
+  };
+  // 엑셀 그림 1개(회사 로고) — sheetNo 는 1부터
+  App.logoImage = function (sheetNo, o) {
+    o = o || {};
+    var L0 = root.HNLogo, h = o.height || App.LOGO_HEIGHT;
+    return { sheet: sheetNo, png: L0.bytes(), col: o.col || 0, row: o.row || 0, dx: o.dx == null ? 2 : o.dx, dy: o.dy == null ? 2 : o.dy,
+      width: L0.widthFor(h), height: h, name: L0.alt, descr: L0.alt };
+  };
+  // 설계변경통보서 A1:B4(양식에서 비어 있는 병합 칸, 폭 약 122 × 높이 80 픽셀) 가운데에 로고
+  App.ECN_LOGO_SLOT = { col: 0, row: 0, height: 68, dx: 20, dy: 6 };
+  App.downloadXlsx = function (fileName, sheets) {
+    if (!App.xlsxReady()) return;
+    App.downloadBlob(new Blob([App.buildXlsx(sheets)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), App.fileName(fileName));
+  };
+  App.downloadBlob = function (blob, name) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   };
   function autoWidths(rows) {
     var w = [];

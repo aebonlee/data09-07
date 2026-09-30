@@ -468,6 +468,41 @@ test('엑셀에 그림 넣기: 시트에 drawing 연결·그림 파일·형식 �
   assert.deepEqual(XLSX.read(out, { type: 'array' }).SheetNames, ['S1', 'S2']); // 다시 읽힘
 });
 
+test('회사 로고: js/brand-logo.js 사본이 img/logo.png 와 같음 · 비율대로 폭', () => {
+  const fs = require('fs');
+  const LG = require('../js/brand-logo.js');
+  const png = fs.readFileSync(new URL('../img/logo.png', import.meta.url));
+  assert.deepEqual(Buffer.from(LG.bytes()), png);          // 로고를 바꾸고 node scripts/make-logo-js.js 를 안 돌리면 여기서 실패
+  assert.equal(LG.width, png.readUInt32BE(16));
+  assert.equal(LG.height, png.readUInt32BE(20));
+  assert.equal(LG.alt, '천일테크윈 로고');
+  assert.equal(LG.widthFor(128), 155);
+  assert.equal(LG.widthFor(56), 68);
+  assert.ok(LG.dataUri.startsWith('data:image/png;base64,iVBOR'));
+});
+test('엑셀 그림: 같은 로고를 여러 시트에 넣으면 그림 파일은 하나 · 칸 안 여백 · 대체 글', () => {
+  const XLSX = require('../vendor/xlsx.full.min.js');
+  const XI = require('../js/xlsx-image.js');
+  const LG = require('../js/brand-logo.js');
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['a']]), 'S1');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['b']]), 'S2');
+  const fig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 9]);
+  const out = XI.addImages(XLSX, new Uint8Array(XLSX.write(wb, { type: 'array', bookType: 'xlsx' })), [
+    { sheet: 1, png: LG.bytes(), col: 0, row: 0, dx: 20, dy: 6, width: 82, height: 68, name: LG.alt, descr: LG.alt },
+    { sheet: 2, png: LG.bytes(), col: 0, row: 0, width: 68, height: 56, name: LG.alt },
+    { sheet: 2, png: fig, col: 0, row: 5, width: 10, height: 10, name: '그림' }]);
+  const z = XLSX.CFB.read(out, { type: 'array' });
+  const media = z.FullPaths.filter(p => /\/xl\/media\/.+\.png$/.test(p));
+  assert.equal(media.length, 2);                            // 로고 1 + 그림 1
+  const txt = p => Buffer.from(XLSX.CFB.find(z, p).content).toString('utf8');
+  assert.ok(txt('/xl/drawings/_rels/drawing1.xml.rels').includes('../media/image1.png'));
+  assert.ok(txt('/xl/drawings/_rels/drawing2.xml.rels').includes('../media/image1.png') && txt('/xl/drawings/_rels/drawing2.xml.rels').includes('../media/image2.png'));
+  assert.ok(txt('/xl/drawings/drawing1.xml').includes('<xdr:colOff>190500</xdr:colOff>') && txt('/xl/drawings/drawing1.xml').includes('<xdr:rowOff>57150</xdr:rowOff>'));
+  assert.ok(txt('/xl/drawings/drawing1.xml').includes('descr="천일테크윈 로고"'));
+  assert.equal(Buffer.from(XLSX.CFB.find(z, '/xl/media/image1.png').content).length, LG.bytes().length);
+});
+
 test('비교 범위 제한: 기준점 둘레 밖의 차이는 지움', () => {
   const W = 20, H = 10, a = new Uint8Array(W * H), b = new Uint8Array(W * H);
   b[2 * W + 2] = 1; b[5 * W + 15] = 1;

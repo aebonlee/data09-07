@@ -783,15 +783,19 @@
     } else body = view === 'slider' ? sliderCanvas(s) : paint(s, 'overlay');
     var k = maxW ? Math.min(1, maxW / body.width) : 1;
     var fs = Math.max(14, Math.round(body.width * k / 70)), head = fs * 3 + 12;
+    // 머리 띠 왼쪽에 회사 로고(2026-09-30 수강생 요청) — 비율 유지, 글자는 로고 오른쪽부터
+    var lg = root.HNLogo && root.HNLogo.img && root.HNLogo.img.complete && root.HNLogo.img.naturalWidth ? root.HNLogo : null;
+    var lh = head - 8, lw = lg ? lg.widthFor(lh) : 0, tx = lg ? 8 + lw + Math.round(fs * 0.8) : 8;
     var c = document.createElement('canvas');
     c.width = Math.round(body.width * k); c.height = Math.round(body.height * k) + head;
     var ctx = c.getContext('2d');
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
     ctx.drawImage(body, 0, head, c.width, c.height - head);
+    if (lg) ctx.drawImage(lg.img, 8, 4, lw, lh);
     ctx.fillStyle = '#1a2330'; ctx.font = 'bold ' + fs + 'px sans-serif';
-    ctx.fillText('도면 비교 — A ' + (s.partA || s.A.name) + ' (변경 전)  vs  B ' + (s.partB || s.B.name) + ' (변경 후)', 8, fs + 4);
+    ctx.fillText('도면 비교 — A ' + (s.partA || s.A.name) + ' (변경 전)  vs  B ' + (s.partB || s.B.name) + ' (변경 후)', tx, fs + 4);
     ctx.font = Math.round(fs * 0.8) + 'px sans-serif';
-    var y2 = fs * 2 + 10, x = 8;
+    var y2 = fs * 2 + 10, x = tx;
     [['rgb(214,32,32)', '적색 = B에만 있는 선·글자'], ['rgb(37,99,235)', '파랑 = A에만 있는 선·글자']].concat(s.res.mv ? [['rgb(126,34,206)', '보라 = 위치만 옮겨진 선']] : []).concat([
       ['#566170', '선 차이 ' + s.res.regions.length + '곳' + (s.res.text ? ' · 글자 변경 ' + s.res.text.counts.변경 + '건' : '') + ' · ' + L.toDateTimeStr(new Date()) + ' · 자동 표시는 후보이며 최종 판단은 담당자']]).forEach(function (p) {
       ctx.fillStyle = p[0]; ctx.fillText(p[1], x, y2); x += ctx.measureText(p[1]).width + fs;
@@ -1042,6 +1046,7 @@
     if (has && s.all) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(allPageRows(s)), '9_전체쪽차이');
     if (s && s.bomRes) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(bomSheetRows(s)), 'BOM비교');
     if (e.id && L.findBy(db.ecns, e.id)) X.utils.book_append_sheet(wb, X.utils.aoa_to_sheet(L.sheetMaterials(db, e.id)), '6_변경자재목록');
+    if (root.HNLogo) images.unshift(App.logoImage(1, App.ECN_LOGO_SLOT)); // 표지(1쪽) 왼쪽 위 A1:B4 에 회사 로고
     var bytes = X.write(wb, { type: 'array', bookType: 'xlsx' });
     if (images.length) bytes = root.HNXlsxImage.addImages(X, new Uint8Array(bytes), images);
     var name = App.fileName('설계변경통보서_' + String(e.ecnNo || e.id || '미정').replace(/[\\/:*?"<>|()]/g, '_') + (has ? '_도면비교' : ''));

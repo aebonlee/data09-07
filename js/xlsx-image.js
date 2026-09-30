@@ -13,7 +13,8 @@
   }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
-  // images = [{sheet: 1부터 센 시트 번호, png: Uint8Array, col, row (0부터), width, height (픽셀), name}]
+  // images = [{sheet: 1부터 센 시트 번호, png: Uint8Array, col, row (0부터), width, height (픽셀), name, descr?, dx?, dy? (칸 안 여백 픽셀)}]
+  // 같은 png 배열을 여러 번 넣으면(회사 로고를 시트마다) 그림 파일은 하나만 두고 함께 씁니다(2026-09-30).
   function addImages(XLSX, xlsxBytes, images) {
     var CFB = XLSX.CFB;
     if (!CFB) throw new Error('엑셀 라이브러리에 CFB(zip) 기능이 없습니다.');
@@ -27,8 +28,14 @@
     var ct = get('/[Content_Types].xml');
     if (!ct) throw new Error('xlsx 구조를 읽지 못했습니다.');
     if (!/Extension="png"/i.test(ct)) ct = ct.replace('<Default ', '<Default Extension="png" ContentType="image/png"/><Default ');
-    var bySheet = {};
-    images.forEach(function (im, i) { im._n = i + 1; (bySheet[im.sheet] = bySheet[im.sheet] || []).push(im); });
+    var bySheet = {}, media = [];
+    images.forEach(function (im) {
+      var k = media.indexOf(im.png);
+      if (k < 0) { media.push(im.png); k = media.length - 1; }
+      im._n = k + 1;
+      (bySheet[im.sheet] = bySheet[im.sheet] || []).push(im);
+    });
+    media.forEach(function (png, k) { put('/xl/media/image' + (k + 1) + '.png', png); });
     var dNo = 0;
     Object.keys(bySheet).forEach(function (sn) {
       dNo++;
@@ -39,11 +46,10 @@
       // 그림 파일 + 도면 XML
       var anchors = '', drels = '';
       list.forEach(function (im, k) {
-        put('/xl/media/image' + im._n + '.png', im.png);
         drels += '<Relationship Id="rId' + (k + 1) + '" Type="' + NS_R + '/image" Target="../media/image' + im._n + '.png"/>';
         var cx = Math.round(im.width * EMU), cy = Math.round(im.height * EMU);
-        anchors += '<xdr:oneCellAnchor><xdr:from><xdr:col>' + (im.col || 0) + '</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>' + (im.row || 0) + '</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>' +
-          '<xdr:ext cx="' + cx + '" cy="' + cy + '"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="' + (k + 2) + '" name="' + esc(im.name || ('그림 ' + (k + 1))) + '" descr="' + esc(im.name || '') + '"/>' +
+        anchors += '<xdr:oneCellAnchor><xdr:from><xdr:col>' + (im.col || 0) + '</xdr:col><xdr:colOff>' + Math.round((im.dx || 0) * EMU) + '</xdr:colOff><xdr:row>' + (im.row || 0) + '</xdr:row><xdr:rowOff>' + Math.round((im.dy || 0) * EMU) + '</xdr:rowOff></xdr:from>' +
+          '<xdr:ext cx="' + cx + '" cy="' + cy + '"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="' + (k + 2) + '" name="' + esc(im.name || ('그림 ' + (k + 1))) + '" descr="' + esc(im.descr || im.name || '') + '"/>' +
           '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId' + (k + 1) + '"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>' +
           '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>';
       });
