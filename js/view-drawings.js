@@ -9,12 +9,21 @@
     var recent = db.drawings.slice().sort(function (a, b) { return String(b.regDate).localeCompare(String(a.regDate)) || b.id.localeCompare(a.id); }).slice(0, 6);
     var waiting = db.drawings.filter(function (d) { return L.drawingStatus(d) === '검토대기'; });
     var openEcn = db.ecns.filter(function (e) { return e.status !== '완료'; });
-    var h = '<div class="page-head"><h1>대시보드</h1><div class="actions">' +
+    // 첫 화면 브랜드 블록 — 로고 · 도구 이름 · 한 줄 설명 · 운영 원칙 · 바로가기 · 작업 5단계
+    var flow = ['등록', '추출 검토', '유사 후보', '그룹 확정', 'ECN 연결'];
+    var h = '<section class="hero" aria-labelledby="dashTitle"><div class="hero-text">' +
+      '<div class="hero-brand"><img class="hero-logo" src="img/logo.png" width="155" height="128" alt="천일테크윈 로고">' +
+      '<div><p class="hero-eyebrow">하네스 도면 · ECN</p><h1 id="dashTitle">대시보드</h1></div></div>' +
+      '<p class="hero-lead">유사 도면 후보 추천부터 설계변경(ECN)·변경자재 이력까지 한 화면에서 확인합니다.</p>' +
+      '<p class="hero-principle">AI는 유사 후보를 추천하고, 그룹 분류와 설계변경 판단은 담당자가 승인합니다.</p>' +
+      '<div class="actions">' +
       '<a class="btn btn-primary" href="#/register">PDF 등록</a>' +
       '<a class="btn" href="#/similar">분석 시작</a>' +
       '<a class="btn" href="#/ecn/new">ECN 등록</a>' +
       '<a class="btn" href="#/search">결과 내보내기 (엑셀)</a></div></div>' +
-      '<p class="principle">AI는 유사 후보를 추천하고, 그룹 분류와 설계변경 판단은 담당자가 승인합니다.</p>';
+      '<div class="hero-flow"><p class="hero-flow-title" id="dashFlow">작업 순서</p><ol aria-labelledby="dashFlow">' +
+      flow.map(function (n, i) { return '<li><span class="n">' + (i + 1) + '</span>' + n + '</li>'; }).join('') +
+      '</ol></div></section>';
     if (!db.drawings.length && !db.ecns.length) {
       h += '<div class="card"><h2>처음 쓰시나요?</h2><p>도면이 아직 없습니다. PDF 도면을 등록하거나, 화면을 먼저 둘러보려면 예시 데이터를 불러오세요.</p>' +
         '<div class="actions"><a class="btn btn-primary" href="#/register">PDF 도면 등록</a><button type="button" class="btn" id="loadSample">예시 데이터 불러오기</button>' +
