@@ -32,7 +32,7 @@ PDF 하네스 도면에서 정보를 추출해 가중치 방식으로 유사 도
 
 ## 실행 방법
 
-**온라인에서 바로 쓰기: https://aebonlee.github.io/data09-07/**
+**온라인에서 바로 쓰기: https://chunilecn.jobability.co.kr/** (2026-09-30 전용 주소 배정 — 옛 주소 https://aebonlee.github.io/data09-07/ 는 새 주소로 넘어갑니다)
 
 내 PC에서 쓰려면 설치 없이 아래 두 방법 중 하나로 엽니다.
 
