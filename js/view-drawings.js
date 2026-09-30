@@ -274,7 +274,9 @@
       var cand = { id: '', fileName: file.name, fileHash: L.fileHash(bytes) };
       return extractPdfText(buf.slice(0)).then(function (res) {
         // 제목란(글자 위치) → 글자 라벨 → 파일명 순서로 채웁니다(2026-09-29 저녁 「문의04」)
-        var ex = L.extractFromPdf(res.text, res.items, res.pw, res.ph, file.name, db.settings);
+        // 글자 정보가 거의 없거나 깨진 PDF 는 제목란·라벨 읽기를 하지 않고 파일명 규칙만 씁니다(엉뚱한 값이 채워지지 않게)
+        var tl = L.textLayerInfo(res.items);
+        var ex = tl.has ? L.extractFromPdf(res.text, res.items, res.pw, res.ph, file.name, db.settings) : L.extractFromPdf('', [], res.pw, res.ph, file.name, db.settings);
         cand.partNo = ex.fields.partNo || ''; cand.rev = ex.fields.rev || '';
         var dup = L.findDuplicates(db.drawings, cand);
         var decide = dup.length ? askDuplicate(file.name, dup) : Promise.resolve('new');
@@ -295,7 +297,7 @@
           db.drawings.push(d);
           App.files[d.id] = buf;
           var miss = L.missingFields(d).length;
-          var scan = res.text.replace(/\s/g, '').length < 20;
+          var scan = !tl.has;   // 글자 정보 판정은 도면 비교와 같은 기준(logic.textLayerInfo)
           var tbn = Object.keys(ex.title || {}).length;
           return { id: d.id, msg: file.name + ' — ' + d.id + ' 자동 저장 · ' + (tbn ? '제목란에서 ' + tbn + '칸 읽음 · ' : '') +
             (scan ? '글자 정보가 없는 PDF(글자를 선으로 그림)라 파일명에서만 읽었습니다. 나머지는 미리보기를 보고 입력해 주세요.' : (miss ? '확인 필요 ' + miss + '건' : '추출 완료')) + (dup.length ? ' · 신규 버전으로 등록' : '') };

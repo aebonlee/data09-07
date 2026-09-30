@@ -548,4 +548,41 @@ test('BOM 펼치기: 수량 = 마스터 × 회로 수 × 개수, 굵기 맞는 �
   assert.deepEqual(L.sheetHousingBom(r, 'X')[1], ['품목코드', '품목명', '구분', '단위', '수량', '출처', '근거', '확인']);
 });
 
+// ── 2026-09-30 수강생 답 반영 ──
+test('글자 정보 판정: 충분하면 있음, 비었거나 몇 개뿐이거나 깨졌으면 없음', () => {
+  const many = ['PART NO.', 'HN-A0231', 'REV C', 'L=450', 'CN-0221', '품명', '350'].map(str => ({ str }));
+  assert.equal(L.textLayerInfo(many).has, true);
+  assert.equal(L.textLayerInfo([]).has, false);
+  assert.ok(/선으로 그린/.test(L.textLayerInfo([]).reason));
+  assert.equal(L.textLayerInfo(undefined).has, false);
+  const few = L.textLayerInfo([{ str: '1/1' }, { str: 'Page 1' }, { str: ' ' }]);
+  assert.equal(few.has, false); assert.equal(few.count, 2); assert.ok(/거의 없음/.test(few.reason));
+  const broken = L.textLayerInfo(['', '��', '', '', '', '', 'A1', 'B2', 'C3', 'D4', 'E5'].map(str => ({ str })));
+  assert.equal(broken.has, false); assert.ok(/깨져/.test(broken.reason));
+  assert.equal(L.textLayerInfo(['기호', '—', '350', 'CN-01', 'OK', 'L=210']).has, true);   // 문자열 배열도 받음, 기호 조각 하나는 괜찮음
+});
+test('비교 방식: 둘 다 글자 정보 있으면 글자+선, 하나라도 없으면 선만(오류 없이 안내 문장)', () => {
+  const T = ['PART NO.', 'HN-A0231', 'REV C', 'L=450', 'CN-0221'].map(str => ({ str }));
+  let m = L.compareModeFor({ kind: 'pdf', text: T }, { kind: 'pdf', text: T });
+  assert.equal(m.text, true); assert.ok(/함께/.test(m.message));
+  m = L.compareModeFor({ kind: 'pdf', text: T }, { kind: 'pdf', text: [] });
+  assert.equal(m.text, false); assert.equal(m.a.has, true); assert.equal(m.b.has, false);
+  assert.ok(/^B 도면은 글자 정보 없음/.test(m.message)); assert.ok(/그림\(선\) 비교만/.test(m.message));
+  m = L.compareModeFor({ kind: 'image', text: [] }, { kind: 'pdf', text: T });
+  assert.ok(/^A 도면은 그림 파일/.test(m.message));
+  m = L.compareModeFor(null, null);
+  assert.equal(m.text, false);
+});
+test('BOM 적요 열은 늘 비교에서 뺌 — 기본값·직접 고른 열·결과 엑셀 모두', () => {
+  const hs = ['품목코드', '품목명', 'BOM버전', '규격', '단위', '수량', '생산공정', '위치', '적요'];
+  assert.deepEqual(L.defaultCompareCols(hs, '품목코드'), ['품목명', '규격', '단위', '수량']);
+  assert.deepEqual(L.defaultCompareCols(['CODE', '메모칸', 'REMARK', '비 고'], 'CODE'), ['메모칸']);   // 힌트 열이 없어 전부 고를 때도 제외
+  assert.equal(L.isExcludedBomCol('적요'), true); assert.equal(L.isExcludedBomCol('Remarks'), true); assert.equal(L.isExcludedBomCol('수량'), false);
+  assert.deepEqual(L.bomCompareCols(['수량', '적요', '위치']), ['수량', '위치']);
+  const A = [{ 품목코드: 'P-1', 수량: 1, 적요: '' }], B = [{ 품목코드: 'P-1', 수량: 1, 적요: '위해작성' }];
+  const r = L.tableDiff(A, B, { key: '품목코드', cols: L.bomCompareCols(['수량', '적요']) });
+  assert.equal(r.counts.동일, 1); assert.equal(r.counts.변경, 0);
+  assert.ok(!L.sheetTableDiff(r, '품목코드')[0].some(h => /적요/.test(h)));
+});
+
 console.log(passed + ' passed' + (process.exitCode ? ' — 실패 있음' : ''));

@@ -1486,11 +1486,53 @@
     }
     return { headers: headers, key: key, rows: rows, partNo: partNo, partName: partName, headerRow: hi + 1, hasTitle: !!title };
   }
-  // 비교할 열 기본값: BOM 에서 뜻이 있는 칸만(적요·위치·생산공정·BOM버전은 양식마다 메모성이라 뺍니다)
+  // 비교할 열 기본값: BOM 에서 뜻이 있는 칸만(위치·생산공정·BOM버전은 양식마다 메모성이라 기본으로 뺍니다 — 화면에서 켤 수 있음)
   var BOM_COMPARE_HINT = ['수량', '단위', '규격', '품목명', '품명', 'QTY', 'UNIT', 'SPEC'];
+  // 비교에서 늘 빼는 열(2026-09-30 수강생 확정): 적요처럼 한쪽 BOM 에만 적어 두는 메모(예: 「위해작성」)는
+  // 부품이 바뀐 것이 아니므로 비교하지 않습니다. 화면에서도 켤 수 없고, 비교 결과 표·엑셀에도 넣지 않습니다.
+  var BOM_EXCLUDED_COL = /^(적요|비고|REMARKS?|NOTES?)$/i;
+  function isExcludedBomCol(hd) { return BOM_EXCLUDED_COL.test(String(hd == null ? '' : hd).replace(/\s+/g, '')); }
   function defaultCompareCols(headers, key) {
-    var c = headers.filter(function (hd) { return hd !== key && BOM_COMPARE_HINT.some(function (x) { return norm(hd) === norm(x); }); });
-    return c.length ? c : headers.filter(function (hd) { return hd !== key; });
+    var ok = headers.filter(function (hd) { return hd !== key && !isExcludedBomCol(hd); });
+    var c = ok.filter(function (hd) { return BOM_COMPARE_HINT.some(function (x) { return norm(hd) === norm(x); }); });
+    return c.length ? c : ok;
+  }
+  // 고른 열에서 제외 열을 걸러 냅니다(예전에 저장된 선택·직접 넘긴 목록도)
+  function bomCompareCols(cols) { return (cols || []).filter(function (c) { return !isExcludedBomCol(c); }); }
+
+  // PDF 글자 정보(텍스트 층)가 쓸 만큼 있는지 판정합니다(2026-09-30 수강생 답: 「되는 것은 되고, 안 되는 것은 안 되게」).
+  // CAD 가 글자를 선으로 그려 내보낸 PDF 는 글자 목록이 비거나, 쪽 번호·도면 밖 표기 몇 개만 있거나,
+  // 글꼴 대응표가 없어 깨진 글자(□·사용자 정의 영역 문자)만 나옵니다. 이런 PDF 로 글자 비교를 하면
+  // 반쯤만 맞는 결과가 나오므로 「글자 정보 없음」으로 보고 그림(선) 비교만 합니다.
+  //  items = [{str}] 또는 문자열 배열. 결과 { has, count, readable, reason }
+  var TEXT_LAYER_MIN = 5;           // 읽을 수 있는 글자 조각이 이보다 적으면(쪽 번호·도면 밖 표기 몇 개뿐) 도면 글자가 아닌 것으로 봄
+  var TEXT_LAYER_MIN_SHARE = 0.6;   // 읽을 수 있는 조각의 몫이 이보다 낮으면 깨진 글자로 봄
+  function textLayerInfo(items) {
+    var list = (items || []).map(function (t) { return String(t && typeof t === 'object' ? t.str : t == null ? '' : t).trim(); }).filter(function (x) { return x !== ''; });
+    var readable = list.filter(function (x) {
+      if (/[\uFFFD\uE000-\uF8FF\u0000-\u001F]/.test(x)) return false;   // 깨진 글자·제어 문자
+      return /[0-9A-Za-z\uAC00-\uD7A3]/.test(x);
+    }).length;
+    var n = list.length, has = readable >= TEXT_LAYER_MIN && readable >= n * TEXT_LAYER_MIN_SHARE;
+    var reason = has ? '글자 정보 있음 (' + readable + '개)'
+      : !n ? '글자 정보 없음 (글자를 선으로 그린 PDF)'
+      : readable < TEXT_LAYER_MIN ? '글자 정보가 거의 없음 (' + readable + '개 — 도면 글자가 아닌 것으로 봄)'
+      : '글자가 깨져 읽을 수 없음 (' + (n - readable) + '/' + n + '개)';
+    return { has: has, count: n, readable: readable, reason: reason };
+  }
+  // 두 도면의 비교 방식: 둘 다 글자 정보가 있으면 글자 비교 + 선 비교, 하나라도 없으면 선(그림) 비교만.
+  //  a·b = { kind: 'pdf'|'image', text: [...] } — 오류로 멈추지 않고, 무엇을 했는지 한 문장으로 알려 줍니다.
+  function compareModeFor(a, b) {
+    function side(x, k) {
+      if (!x) return { k: k, has: false, why: '도면 없음' };
+      if (x.kind !== 'pdf') return { k: k, has: false, why: '그림 파일(PNG·JPG)' };
+      var inf = textLayerInfo(x.text);
+      return { k: k, has: inf.has, why: inf.reason };
+    }
+    var A = side(a, 'A'), B = side(b, 'B');
+    if (A.has && B.has) return { text: true, a: A, b: B, message: '두 도면 모두 PDF 글자 정보가 있어 글자 비교(T번호)와 선 비교를 함께 했습니다.' };
+    var lack = [A, B].filter(function (x) { return !x.has; }).map(function (x) { return x.k + ' 도면은 ' + x.why; }).join(', ');
+    return { text: false, a: A, b: B, message: lack + ' — 그래서 글자 비교는 건너뛰고 그림(선) 비교만 했습니다. 치수·품번 글자가 바뀐 곳도 선 모양이 달라지면 적색 상자로 잡힙니다.' };
   }
   // 편집 거리(작은 문자열용)
   function editDistance(a, b) {
@@ -1854,7 +1896,7 @@
     guessKeyColumn: guessKeyColumn, parsePastedTable: parsePastedTable, tableDiff: tableDiff,
     drawingPartRows: drawingPartRows, partRowKey: partRowKey, sheetTableDiff: sheetTableDiff,
     findFrame: findFrame, frameTransform: frameTransform, bestShift: bestShift, composeShift: composeShift, textDiff: textDiff, markMoved: markMoved, explainMoves: explainMoves, tagMovedRegions: tagMovedRegions, blockAlign: blockAlign, clipDiff: clipDiff, pointsBox: pointsBox,
-    parseBomSheet: parseBomSheet, defaultCompareCols: defaultCompareCols, editDistance: editDistance,
+    parseBomSheet: parseBomSheet, defaultCompareCols: defaultCompareCols, isExcludedBomCol: isExcludedBomCol, bomCompareCols: bomCompareCols, textLayerInfo: textLayerInfo, compareModeFor: compareModeFor, editDistance: editDistance,
     replacementCandidates: replacementCandidates, materialsFromDiff: materialsFromDiff, filledMaterials: filledMaterials,
     titleBlockFields: titleBlockFields, titleRegionItems: titleRegionItems, fileNameFields: fileNameFields, extractFromPdf: extractFromPdf, customerFromText: customerFromText, normDate: normDate,
     parseHousingMaster: parseHousingMaster, findHousings: findHousings, housingPins: housingPins, expandHousingBom: expandHousingBom, sheetHousingBom: sheetHousingBom, csaRange: csaRange

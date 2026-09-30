@@ -50,7 +50,8 @@
         return '<option value="' + x[0] + '"' + (o.pdfSide === x[0] ? ' selected' : '') + '>' + x[1] + '</option>';
       }).join('') + '</select><span class="hint">바꾼 뒤 PDF 를 다시 불러와 주세요</span></label></div>' +
       '<p class="small muted">CAD 에서 내보낸 PDF 를 그대로 올려 주세요. 지정한 쪽(기본 1쪽)을 그림으로 바꾸고, PDF 안에 글자 정보가 있으면 글자끼리도 비교합니다(치수·품번 같은 글자 변경). ' +
-      'PNG · JPG 그림도 됩니다. 두 도면의 용지 크기가 달라도 B를 A에 맞춰 자동으로 줄이거나 늘립니다.</p></div>';
+      'PNG · JPG 그림도 됩니다. 두 도면의 용지 크기가 달라도 B를 A에 맞춰 자동으로 줄이거나 늘립니다.</p>' +
+      (s.A && s.B ? '<p class="small" id="cmpMode"><strong>비교 방식</strong> — ' + esc(modeText(L.compareModeFor(s.A, s.B))) + '</p>' : '') + '</div>';
 
     // 2 위치 맞추기
     var T = manualTransform(s);
@@ -102,13 +103,19 @@
     var img = s[k], part = k === 'A' ? s.partA : s.partB, db = App.db;
     var drwId = k === 'A' ? s.drwA : s.drwB;
     var canPdf = drwId && App.files[drwId];
-    var info = img ? img.name + ' · ' + img.w + '×' + img.h + '픽셀' + (img.kind === 'pdf' ? (img.text && img.text.length ? ' · 글자 ' + img.text.length + '개' : ' · 글자 정보 없음(선으로 그린 글자 — 그림으로만 비교)') : '') : '아직 불러오지 않았습니다.';
+    var tl = img && img.kind === 'pdf' ? L.textLayerInfo(img.text) : null;
+    var info = img ? img.name + ' · ' + img.w + '×' + img.h + '픽셀' + (tl ? ' · ' + tl.reason + (tl.has ? ' — 글자 비교 가능' : ' — 그림으로 비교') : ' · 그림 파일 — 그림으로 비교') : '아직 불러오지 않았습니다.';
     return '<div class="cmp-slot"><h3>' + (k === 'A' ? 'A품번 — 기준 도면 (변경 전)' : 'B품번 — 비교 대상 도면 (변경 후)') + '</h3>' +
       '<label class="field"><span>' + k + '품번</span><input type="text" list="partNos" id="part' + k + '" value="' + esc(part) + '" placeholder="예: HN-A0231"></label>' +
       '<div class="form-grid" style="margin-top:8px"><label class="field wide"><span>도면 파일 (PDF · PNG · JPG)</span><input type="file" id="file' + k + '" accept="application/pdf,.pdf,image/png,image/jpeg,.png,.jpg,.jpeg"></label>' +
       '<label class="field"><span>PDF 쪽 번호</span><input type="number" id="page' + k + '" min="1" value="1"></label></div>' +
       (canPdf ? '<p class="small"><button type="button" class="btn btn-sm" data-usereg="' + k + '">등록한 PDF(' + esc(L.findBy(db.drawings, drwId).fileName || drwId) + ') 불러오기</button></p>' : '') +
       '<p class="small ' + (img ? '' : 'muted') + '" id="info' + k + '">' + esc(info) + '</p></div>';
+  }
+  // 글자 정보가 있으면 글자 비교, 없으면 그림(선) 비교만 — 오류가 아니라 안내로 알립니다(2026-09-30 수강생 답)
+  function modeText(m) {
+    return m.text ? '두 도면 모두 PDF 글자 정보가 있어 「차이 계산」 때 글자 비교(T번호)와 선 비교를 함께 합니다.'
+      : [m.a, m.b].filter(function (x) { return !x.has; }).map(function (x) { return x.k + ' 도면은 ' + x.why; }).join(', ') + ' — 글자 비교 없이 그림(선) 비교로 찾습니다.';
   }
   function rng(key, label, min, max, step, val, hint) {
     return '<label class="field"><span>' + esc(label) + ' <output id="out_' + key + '">' + val + '</output></span>' +
@@ -355,13 +362,13 @@
     if (roi) { L.clipDiff(diff, W, H, roi); shiftNote += ' · 비교 범위: 기준점 둘레만'; }
     var mvx = {};
     var regions = regionsFor(mA, mB, diff, W, H, o, !block, mvx);
-    var text = null;
-    if (s.A.text && s.B.text && s.A.text.length && s.B.text.length) {
+    var text = null, mode = L.compareModeFor(s.A, s.B);
+    if (mode.text) {
       var tb = s.B.text.map(function (t) { var p = L.applySimilarity(T, t); return { str: t.str, x: p.x, y: p.y, h: t.h * (T.scale || 1), w: t.w * (T.scale || 1), ang: t.ang }; });
       var inRoi = function (t) { return !roi || (t.x >= roi.x0 && t.x <= roi.x1 && t.y >= roi.y0 && t.y <= roi.y1); };
       text = L.textDiff(s.A.text.filter(inRoi), tb.filter(inRoi), { radius: 1.2, minRadius: 6 });
     }
-    s.res = { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, mv: mvx.mv || null, T: T, text: text, at: new Date(), cache: {},
+    s.res = { thr: o.thr, block: !!block, roi: roi, W: W, H: H, mA: mA, mB: mB, diff: diff, regions: regions, mv: mvx.mv || null, T: T, text: text, mode: mode, at: new Date(), cache: {},
       alignText: how + ' — ' + tText(T) + shiftNote };
     s.sel = 0; s.tsel = 0;
     App.rerender();
@@ -579,8 +586,8 @@
     var box = $('#textBox'); if (!box) return;
     var tx = s.res.text;
     if (!tx) {
-      var why = (s.A.kind === 'pdf' && !(s.A.text || []).length) || (s.B.kind === 'pdf' && !(s.B.text || []).length) ? 'PDF 에 글자 정보가 없어(글자를 선으로 그린 CAD 출력)' : '두 도면 중 하나가 그림 파일이라';
-      box.innerHTML = '<p class="small muted" style="margin-top:12px">글자 비교는 하지 않았습니다 — ' + why + ' 선 비교로만 찾습니다. 치수 글자가 바뀌어도 선 비교에서 적색 상자로 잡힙니다.</p>';
+      var m = s.res.mode || L.compareModeFor(s.A, s.B);
+      box.innerHTML = '<p class="small" style="margin-top:12px"><strong>그림(선) 비교만 했습니다.</strong> ' + esc(m.message) + '</p>';
       return;
     }
     var rows = tx.list.filter(function (d) { return d.type !== '이동' || s.showMoved; });
@@ -722,6 +729,8 @@
     if (!s.bomCols || s.bomColsFor !== sig) { s.bomCols = L.defaultCompareCols(hs, s.bomKey); s.bomColsFor = sig; }
     var box = $('#bomCols');
     box.innerHTML = hs.filter(function (x) { return x !== s.bomKey; }).map(function (x) {
+      // 적요 같은 메모 열은 비교에서 늘 뺍니다(2026-09-30 수강생 확정) — 체크 칸을 막아 둡니다
+      if (L.isExcludedBomCol(x)) return '<label class="muted" title="한쪽 BOM 에만 적는 메모(예: 위해작성)라 비교하지 않습니다"><input type="checkbox" disabled> ' + esc(x) + ' (비교 제외)</label>';
       return '<label><input type="checkbox" data-bcol="' + esc(x) + '"' + (s.bomCols.indexOf(x) >= 0 ? ' checked' : '') + '> ' + esc(x) + '</label>';
     }).join('') || '<span class="muted">—</span>';
     $$('[data-bcol]', box).forEach(function (c) {
@@ -742,7 +751,7 @@
   }
   function runBom(s) {
     if (!s.bomA || !s.bomB) { App.toast('A · B 표를 모두 넣어 주세요.'); return; }
-    s.bomRes = L.tableDiff(s.bomA.rows, s.bomB.rows, { key: s.bomKey, cols: s.bomCols.slice() });
+    s.bomRes = L.tableDiff(s.bomA.rows, s.bomB.rows, { key: s.bomKey, cols: L.bomCompareCols(s.bomCols) });
     s.bomRes.reps = L.replacementCandidates(s.bomRes);
     renderBom(s); var bx = $('#bomXlsx'); if (bx) bx.disabled = false;
     var bm = $('#toEcnMat'); if (bm) bm.disabled = false;
@@ -887,7 +896,7 @@
     if (has) {
       images.push({ sheet: 1, png: canvasBytes(fig), col: 0, row: r.figure.row, width: fig.width, height: fig.height, name: '9절 도면 비교 (A 변경 전 · B 변경 후)' });
       var big = resultImage(s, 'overlay', 1600);
-      var head = [['도면 비교 — A ' + (s.partA || s.A.name) + ' vs B ' + (s.partB || s.B.name)], [resText(s.res)], [s.res.alignText], ['아래 그림: 겹쳐 보기(적색 = B에만, 파랑 = A에만). 그림 아래에 선 차이 · 글자 차이 목록이 있습니다.']];
+      var head = [['도면 비교 — A ' + (s.partA || s.A.name) + ' vs B ' + (s.partB || s.B.name)], [resText(s.res)], [s.res.alignText], [(s.res.mode || L.compareModeFor(s.A, s.B)).message], ['아래 그림: 겹쳐 보기(적색 = B에만, 파랑 = A에만). 그림 아래에 선 차이 · 글자 차이 목록이 있습니다.']];
       var figRows = Math.ceil(big.height / 20) + 1;
       var aoa = head.slice();
       for (var i = 0; i < figRows; i++) aoa.push([]);
